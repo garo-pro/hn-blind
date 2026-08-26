@@ -1,0 +1,1196 @@
+//! hn-blind — an accessible Hacker News client.
+//!
+//! The interface is a real native wxWidgets window: a `ListCtrl` for the
+//! story and help lists, a `TreeCtrl` for comment threads, a native
+//! `MenuBar`, and a `Dialog` for settings. wxWidgets' own MSAA/UIA support is
+//! what a screen reader reads; Prism supplies direct speech for status and
+//! on-demand full reading. See `app.rs` for how state becomes wording,
+//! `speech.rs` for how the two output channels stay out of each other's way,
+//! and `templates.rs` for where the wording itself comes from.
+
+// No console window when launched normally (e.g. double-click); `cargo run`
+// still shows one because it launches through a terminal already.
+#![windows_subsystem = "windows"]
+
+use std::cell::{Cell, RefCell};
+use std::rc::Rc;
+use std::sync::mpsc;
+use std::thread;
+
+use wxdragon::event::{IdleEvent, IdleMode, WindowEvents};
+use wxdragon::keycode::{WXK_DOWN, WXK_END, WXK_ESCAPE, WXK_F1, WXK_F5, WXK_HOME, WXK_PAGEDOWN, WXK_PAGEUP, WXK_UP};
+use wxdragon::prelude::*;
+use wxdragon::widgets::item_data::HasItemData;
+
+use hn_blind::app::{App, View};
+use hn_blind::config;
+use hn_blind::hn::{self, CommentRow, Feed, Item};
+use hn_blind::menu::{self, Command, Item as MenuEntry, Kind};
+use hn_blind::preferences;
+use hn_blind::settings::{Field, TABS, fields_of};
+use hn_blind::speech::Speaker;
+use hn_blind::templates::{Template, validate};
+
+/// How many stories to pull per feed. HN's lists run to 500; a few screens'
+/// worth is what anyone actually reads.
+const STORY_LIMIT: usize = 50;
+/// Upper bound on comments fetched for one story, to keep big threads snappy.
+const COMMENT_LIMIT: usize = 400;
+/// Rows moved by Page Up / Page Down.
+const PAGE: isize = 10;
+
+/// Work handed to the network thread.
+enum Request {
+    Stories { generation: u64, feed: Feed },
+    Comments { generation: u64, story: Box<Item> },
+}
+
+/// Results handed back from the network thread. Plain, `Send` data only —
+/// the actual `Gui` state lives behind an `Rc`, which cannot cross threads,
+/// so a background thread only ever produces one of these and never touches
+/// the UI directly. See `apply_result` for where it lands.
+enum WorkResult {
+    Stories {
+        generation: u64,
+        feed: Feed,
+        result: Result<Vec<Item>, String>,
+    },
+    Comments {
+        generation: u64,
+        result: Result<Vec<CommentRow>, String>,
+    },
+}
+
+/// Everything that isn't a widget handle.
+struct AppState {
+    app: App,
+    speaker: Speaker,
+    generation: u64,
+    requests: mpsc::Sender<Request>,
+    /// Parallel to `app.comments`: the tree node for each row, so a cursor
+    /// index can be turned into something `TreeCtrl` understands.
+    comment_items: Vec<TreeItemId>,
+}
+
+/// The application's shared handle. Widgets are cheap `Copy` types, so they
+/// live here directly; only `AppState` needs a `RefCell`. Cloning a `Gui` is
+/// cheap and is how every closure gets its own handle to the whole app.
+#[derive(Clone)]
+struct Gui {
+    state: Rc<RefCell<AppState>>,
+    /// Set for the duration of a *programmatic* selection change on `list`
+    /// or `tree`, so the resulting native focus/selection event (which some
+    /// platforms fire synchronously) knows to ignore an echo of a move this
+    /// process already announced, rather than re-entering `state`'s
+    /// `RefCell` while it may still be borrowed.
+    suppress: Rc<Cell<bool>>,
+    frame: Frame,
+    list: ListCtrl,
+    tree: TreeCtrl,
+    menu_bar: MenuBar,
+}
+
+fn main() {
+    SystemOptions::set_option_by_int("msw.no-manifest-check", 1);
+    let _ = wxdragon::main(|_| run());
+}
+
+fn run() {
+    let (templates, templates_note) = config::load();
+    let (preferences, preferences_note) = preferences::load();
+    let startup_note = match (templates_note, preferences_note) {
+        (Some(a), Some(b)) => Some(format!("{a} {b}")),
+        (Some(note), None) | (None, Some(note)) => Some(note),
+        (None, None) => None,
+    };
+
+    let frame = Frame::builder()
+        .with_title("hn-blind")
+        .with_size(Size::new(900, 600))
+        .build();
+    frame.set_extra_style(ExtraWindowStyle::ProcessIdle);
+    IdleEvent::set_mode(IdleMode::ProcessSpecified);
+
+    let panel = Panel::builder(&frame).build();
+    let sizer = BoxSizer::builder(Orientation::Vertical).build();
+
+    let list = ListCtrl::builder(&panel).with_style(ListCtrlStyle::Report).build();
+    list.insert_column(0, "", ListColumnFormat::Left, 860);
+    let tree = TreeCtrl::builder(&panel)
+        .with_style(TreeCtrlStyle::HasButtons | TreeCtrlStyle::LinesAtRoot | TreeCtrlStyle::HideRoot)
+        .build();
+    tree.show(false);
+
+    sizer.add(&list, 1, SizerFlag::Expand | SizerFlag::All, 0);
+    sizer.add(&tree, 1, SizerFlag::Expand | SizerFlag::All, 0);
+    panel.set_sizer(sizer, true);
+
+    let _status_bar = frame.create_status_bar(1, 0, -1, "");
+
+    let (requests, worker_rx) = spawn_worker();
+
+    let app = App::new(Feed::Top, templates, preferences);
+    let speaker = Speaker::new();
+    let state = Rc::new(RefCell::new(AppState {
+        app,
+        speaker,
+        generation: 0,
+        requests,
+        comment_items: Vec::new(),
+    }));
+
+    let menu_bar = build_menu_bar();
+    frame.set_menu_bar(menu_bar);
+    let menu_bar = frame.get_menu_bar().expect("menu bar was just set");
+
+    let gui = Gui {
+        state,
+        suppress: Rc::new(Cell::new(false)),
+        frame,
+        list,
+        tree,
+        menu_bar,
+    };
+
+    bind_menu_events(&gui);
+    bind_content_keys(&gui.list, &gui);
+    bind_content_keys(&gui.tree, &gui);
+    bind_content_selection(&gui);
+    bind_worker_idle(&gui, worker_rx);
+
+    sync_feed_labels(&gui);
+    sync_menu_checks(&gui);
+
+    gui.frame.show(true);
+    gui.frame.centre();
+
+    let feed = gui.state.borrow().app.feed;
+    load_feed(&gui, feed);
+
+    // Said after the request is in flight, so it replaces "Loading" rather
+    // than being cut off by it. The feed announces itself when it arrives.
+    if let Some(note) = startup_note {
+        set_status(&gui, note);
+    }
+}
+
+// ---- Wording / title -------------------------------------------------------
+
+/// Mirror position into the window title, the one thing a sighted person
+/// looking over a shoulder can read.
+fn sync_title(gui: &Gui) {
+    let s = gui.state.borrow();
+    let count = s.app.row_count();
+    let (position, total) = if count == 0 {
+        (String::new(), String::new())
+    } else {
+        ((s.app.cursor() + 1).to_string(), count.to_string())
+    };
+    let title = s.app.text(
+        Template::WindowTitle,
+        &[
+            ("title", &s.app.list_title()),
+            ("position", &position),
+            ("count", &total),
+        ],
+    );
+    drop(s);
+    gui.frame.set_title(&title);
+}
+
+/// Set the status line and speak it.
+///
+/// Status is Prism's job. A screen reader with native support for the
+/// standard Windows status bar control announces its text changes on its
+/// own when Prism itself is not speaking; either way exactly one channel
+/// says it.
+fn set_status(gui: &Gui, text: impl Into<String>) {
+    let text = text.into();
+    gui.state.borrow_mut().app.status = text.clone();
+    gui.frame.set_status_text(&text, 0);
+    gui.state.borrow_mut().speaker.announce(&text);
+}
+
+/// Announce a change of view: the new context, then the row now focused.
+///
+/// Both go out as a single utterance because `announce` interrupts, so two
+/// calls would leave the user hearing only the second.
+fn enter_view(gui: &Gui, status: impl Into<String>) {
+    gui.state.borrow_mut().app.status = status.into();
+    populate_view(gui);
+    sync_title(gui);
+
+    let s = gui.state.borrow();
+    gui.frame.set_status_text(&s.app.status.clone(), 0);
+    let label = if s.speaker.announces_focus() {
+        s.app.row_label(s.app.cursor())
+    } else {
+        String::new()
+    };
+    let text = s.app.text(
+        Template::AnnounceView,
+        &[
+            ("status", &s.app.status),
+            ("label", &label),
+            ("position", &(s.app.cursor() + 1).to_string()),
+            ("count", &s.app.row_count().to_string()),
+        ],
+    );
+    drop(s);
+    gui.state.borrow_mut().speaker.announce(&text);
+}
+
+/// Handle a cursor move: push the new position into the native control, then
+/// (with no screen reader doing it for us) speak the row that landed under
+/// it.
+fn moved(gui: &Gui) {
+    let (view, cursor, count, items) = {
+        let s = gui.state.borrow();
+        (s.app.view, s.app.cursor(), s.app.row_count(), s.comment_items.clone())
+    };
+
+    gui.suppress.set(true);
+    match view {
+        View::Stories | View::Help => select_list_row(&gui.list, cursor, count),
+        View::Comments => select_tree_row(&gui.tree, &items, cursor),
+        View::Settings => {}
+    }
+    gui.suppress.set(false);
+
+    sync_title(gui);
+
+    let s = gui.state.borrow();
+    if !s.speaker.announces_focus() {
+        return;
+    }
+    let label = s.app.row_label(s.app.cursor());
+    let text = s.app.text(
+        Template::AnnounceRow,
+        &[
+            ("label", &label),
+            ("position", &(s.app.cursor() + 1).to_string()),
+            ("count", &s.app.row_count().to_string()),
+        ],
+    );
+    drop(s);
+    gui.state.borrow_mut().speaker.announce(&text);
+}
+
+/// Rebuild the list or tree from current state and select the current
+/// cursor, without speaking anything — callers that show a new view speak
+/// through `enter_view` instead.
+fn populate_view(gui: &Gui) {
+    let view = gui.state.borrow().app.view;
+    gui.suppress.set(true);
+
+    match view {
+        View::Stories | View::Help => {
+            gui.tree.show(false);
+            gui.list.show(true);
+            gui.list.delete_all_items();
+            let count = gui.state.borrow().app.row_count();
+            for i in 0..count {
+                let label = gui.state.borrow().app.row_label(i);
+                gui.list.insert_item(i as i64, &label, None);
+            }
+            let cursor = gui.state.borrow().app.cursor();
+            select_list_row(&gui.list, cursor, count);
+        }
+        View::Comments => {
+            gui.list.show(false);
+            gui.tree.show(true);
+            gui.tree.delete_all_items();
+
+            let mut items: Vec<TreeItemId> = Vec::new();
+            {
+                let s = gui.state.borrow();
+                if !s.app.comments.is_empty() {
+                    if let Some(root) = gui.tree.add_root("Comments", None, None) {
+                        let mut stack: Vec<(i64, TreeItemId)> = Vec::new();
+                        for (i, row) in s.app.comments.iter().enumerate() {
+                            let depth = row.depth as i64;
+                            while stack.last().is_some_and(|(d, _)| *d >= depth) {
+                                stack.pop();
+                            }
+                            let parent = stack.last().map(|(_, id)| id).unwrap_or(&root);
+                            let label = s.app.row_label(i);
+                            if let Some(item) = gui.tree.append_item_with_data(parent, &label, i, None, None) {
+                                items.push(item.clone());
+                                stack.push((depth, item));
+                            }
+                        }
+                        gui.tree.expand_all();
+                    }
+                }
+            }
+            gui.state.borrow_mut().comment_items = items.clone();
+            let cursor = gui.state.borrow().app.cursor();
+            select_tree_row(&gui.tree, &items, cursor);
+        }
+        View::Settings => {
+            gui.list.show(false);
+            gui.tree.show(false);
+        }
+    }
+
+    gui.suppress.set(false);
+}
+
+fn select_list_row(list: &ListCtrl, index: usize, count: usize) {
+    let mask = ListItemState::Selected | ListItemState::Focused;
+    for i in 0..count {
+        let state = if i == index { mask } else { ListItemState::None };
+        list.set_item_state(i as i64, state, mask);
+    }
+    if count > 0 {
+        list.ensure_visible(index as i64);
+        list.set_focus();
+    }
+}
+
+fn select_tree_row(tree: &TreeCtrl, items: &[TreeItemId], index: usize) {
+    tree.unselect_all();
+    if let Some(item) = items.get(index) {
+        tree.select_item(item);
+        tree.ensure_visible(item);
+        tree.set_focus();
+    }
+}
+
+// ---- Actions ---------------------------------------------------------------
+
+fn move_by(gui: &Gui, delta: isize) {
+    let did_move = gui.state.borrow_mut().app.move_cursor(delta);
+    if did_move {
+        moved(gui);
+    }
+}
+
+fn move_to(gui: &Gui, index: usize) {
+    let did_move = gui.state.borrow_mut().app.move_to(index);
+    if did_move {
+        moved(gui);
+    }
+}
+
+fn load_feed(gui: &Gui, feed: Feed) {
+    let status = {
+        let mut s = gui.state.borrow_mut();
+        s.generation += 1;
+        s.app.feed = feed;
+        s.app.view = View::Stories;
+        s.app.loading = true;
+        let _ = s.requests.send(Request::Stories {
+            generation: s.generation,
+            feed,
+        });
+        s.app.text(Template::StatusLoadingFeed, &[("feed", &s.app.feed_title())])
+    };
+    set_status(gui, status);
+    sync_menu_checks(gui);
+}
+
+fn open_comments(gui: &Gui) {
+    let story = gui.state.borrow().app.selected_story().cloned();
+    let Some(story) = story else {
+        let status = gui.state.borrow().app.text(Template::StatusNothingSelected, &[]);
+        set_status(gui, status);
+        return;
+    };
+
+    let title = story.title.clone().unwrap_or_default();
+    if story.kids.is_empty() {
+        let status = gui.state.borrow().app.text(Template::StatusNoComments, &[("title", &title)]);
+        set_status(gui, status);
+        return;
+    }
+
+    let status = {
+        let mut s = gui.state.borrow_mut();
+        s.generation += 1;
+        s.app.loading = true;
+        let count = s.app.comments.len();
+        let _ = s.requests.send(Request::Comments {
+            generation: s.generation,
+            story: Box::new(story.clone()),
+        });
+        s.app.comment_story = Some(story);
+        s.app.text(
+            Template::StatusLoadingComments,
+            &[("title", &title), ("count", &count.to_string())],
+        )
+    };
+    set_status(gui, status);
+}
+
+fn go_back(gui: &Gui) {
+    let view = gui.state.borrow().app.view;
+    match view {
+        View::Settings => {}
+        View::Help => {
+            let title = {
+                let mut s = gui.state.borrow_mut();
+                s.app.view = s.app.previous_view;
+                s.app.list_title()
+            };
+            enter_view(gui, title);
+        }
+        View::Comments => {
+            let title = {
+                let mut s = gui.state.borrow_mut();
+                s.app.view = View::Stories;
+                s.app.comments.clear();
+                s.app.comment_cursor = 0;
+                s.app.comment_story = None;
+                s.app.list_title()
+            };
+            enter_view(gui, title);
+        }
+        View::Stories => {
+            let status = gui.state.borrow().app.text(Template::StatusAtTop, &[]);
+            set_status(gui, status);
+        }
+    }
+}
+
+fn toggle_help(gui: &Gui) {
+    let view = gui.state.borrow().app.view;
+    if view == View::Help {
+        go_back(gui);
+        return;
+    }
+    let status = {
+        let mut s = gui.state.borrow_mut();
+        s.app.previous_view = s.app.view;
+        s.app.view = View::Help;
+        let output = s.speaker.status().to_string();
+        s.app.text(Template::StatusHelp, &[("output", &output), ("count", &s.app.row_count().to_string())])
+    };
+    enter_view(gui, status);
+}
+
+/// Open a URL in the user's browser, reporting what happened either way.
+fn open_url(gui: &Gui, url: Option<String>, what: Template) {
+    let what_text = gui.state.borrow().app.text(what, &[]);
+    let Some(url) = url else {
+        let status = gui.state.borrow().app.text(Template::StatusNoLink, &[("what", &what_text)]);
+        set_status(gui, status);
+        return;
+    };
+
+    let status = match open::that_detached(&url) {
+        Ok(()) => gui.state.borrow().app.text(Template::StatusOpened, &[("what", &what_text), ("url", &url)]),
+        Err(err) => gui.state.borrow().app.text(
+            Template::StatusOpenFailed,
+            &[("what", &what_text), ("url", &url), ("error", &err.to_string())],
+        ),
+    };
+    set_status(gui, status);
+}
+
+fn read_selection(gui: &Gui) {
+    let detail = gui.state.borrow().app.selected_detail();
+    let enabled = gui.state.borrow().speaker.is_enabled();
+    if enabled {
+        gui.state.borrow_mut().speaker.announce(&detail);
+    } else {
+        // With no speech backend, route it through the status line so the
+        // screen reader reads it instead.
+        set_status(gui, detail);
+    }
+}
+
+/// The default action for the current row: comments for a story, and the
+/// permalink for a comment.
+fn activate(gui: &Gui) {
+    let view = gui.state.borrow().app.view;
+    match view {
+        View::Stories => open_comments(gui),
+        View::Comments => {
+            let url = gui.state.borrow().app.selected_item().map(|item| item.hn_url());
+            open_url(gui, url, Template::WordComment);
+        }
+        View::Help => go_back(gui),
+        View::Settings => {}
+    }
+}
+
+fn reload(gui: &Gui) {
+    let feed = gui.state.borrow().app.feed;
+    load_feed(gui, feed);
+}
+
+fn toggle_speech(gui: &Gui) {
+    let status = {
+        let mut s = gui.state.borrow_mut();
+        let on = s.speaker.toggle();
+        let template = if on { Template::StatusSpeechOn } else { Template::StatusSpeechOff };
+        let backend = s.speaker.status().to_string();
+        s.app.text(template, &[("backend", &backend)])
+    };
+    set_status(gui, status);
+    sync_menu_checks(gui);
+}
+
+/// Perform a command, however it was reached — the menu bar and the matching
+/// key both end up here, so the two can never drift apart.
+fn run_command(gui: &Gui, command: Command) {
+    match command {
+        Command::SelectFeed(feed) => load_feed(gui, feed),
+        Command::Reload => reload(gui),
+        Command::OpenComments => open_comments(gui),
+        Command::OpenLink => {
+            let url = gui
+                .state
+                .borrow()
+                .app
+                .selected_item()
+                .map(|item| item.url.clone().unwrap_or_else(|| item.hn_url()));
+            open_url(gui, url, Template::WordLink);
+        }
+        Command::OpenDiscussion => {
+            let url = gui.state.borrow().app.selected_story().map(|story| story.hn_url());
+            open_url(gui, url, Template::WordDiscussion);
+        }
+        Command::ReadInFull => read_selection(gui),
+        Command::StopSpeaking => gui.state.borrow_mut().speaker.stop(),
+        Command::ToggleSpeech => toggle_speech(gui),
+        Command::OpenSettings => open_settings(gui),
+        Command::OpenHelp => toggle_help(gui),
+        Command::Quit => gui.frame.close(true),
+    }
+}
+
+// ---- Keyboard ---------------------------------------------------------------
+
+/// Named (non-printable) keys, shared by the story/help list and the comment
+/// tree. Returns whether the key was consumed.
+fn handle_named_key(gui: &Gui, code: i32) -> bool {
+    if code == WXK_UP {
+        move_by(gui, -1);
+    } else if code == WXK_DOWN {
+        move_by(gui, 1);
+    } else if code == WXK_PAGEUP {
+        move_by(gui, -PAGE);
+    } else if code == WXK_PAGEDOWN {
+        move_by(gui, PAGE);
+    } else if code == WXK_HOME {
+        move_to(gui, 0);
+    } else if code == WXK_END {
+        let last = gui.state.borrow().app.row_count().saturating_sub(1);
+        move_to(gui, last);
+    } else if code == WXK_F1 {
+        toggle_help(gui);
+    } else {
+        return false;
+    }
+    true
+}
+
+/// Printable characters, shared by the story/help list and the comment tree.
+/// Returns whether the character was consumed.
+fn handle_char(gui: &Gui, ch: char) -> bool {
+    if let Some(digit) = ch.to_digit(10) {
+        let index = (digit as usize).wrapping_sub(1);
+        if digit > 0 && index < Feed::ALL.len() {
+            load_feed(gui, Feed::ALL[index]);
+        }
+        return true;
+    }
+
+    match ch {
+        '\u{8}' => go_back(gui), // Backspace
+        '\r' | '\n' => activate(gui),
+        '\u{1b}' => {
+            // Escape: at the story list either quits or is just Backspace's
+            // synonym for "go back", depending on the preference; elsewhere
+            // it always means "go back".
+            let (view, escape_exits) = {
+                let s = gui.state.borrow();
+                (s.app.view, s.app.preferences.escape_exits)
+            };
+            if view == View::Stories && escape_exits {
+                gui.frame.close(true);
+            } else {
+                go_back(gui);
+            }
+        }
+        'j' | 'J' => move_by(gui, 1),
+        'k' | 'K' => move_by(gui, -1),
+        'o' | 'O' => {
+            let url = gui
+                .state
+                .borrow()
+                .app
+                .selected_item()
+                .map(|item| item.url.clone().unwrap_or_else(|| item.hn_url()));
+            open_url(gui, url, Template::WordLink);
+        }
+        'c' | 'C' => {
+            let url = gui.state.borrow().app.selected_story().map(|story| story.hn_url());
+            open_url(gui, url, Template::WordDiscussion);
+        }
+        'r' | 'R' => reload(gui),
+        'p' | 'P' => read_selection(gui),
+        's' | 'S' => gui.state.borrow_mut().speaker.stop(),
+        'v' | 'V' => toggle_speech(gui),
+        ',' => open_settings(gui),
+        'h' | 'H' => toggle_help(gui),
+        'q' | 'Q' => gui.frame.close(true),
+        _ => return false,
+    }
+    true
+}
+
+/// Bind the global single-letter/movement commands to a content control (the
+/// story/help list or the comment tree). Both get identical bindings so the
+/// commands work no matter which one currently holds focus.
+fn bind_content_keys<W: WindowEvents>(widget: &W, gui: &Gui) {
+    let g = gui.clone();
+    widget.on_key_down(move |e: WindowEventData| {
+        let handled = matches!(&e, WindowEventData::Keyboard(kb) if kb.get_key_code().is_some_and(|code| handle_named_key(&g, code)));
+        if handled {
+            e.skip(false);
+        }
+    });
+
+    let g = gui.clone();
+    widget.on_char(move |e: WindowEventData| {
+        let handled = matches!(&e, WindowEventData::Keyboard(kb)
+            if kb.get_unicode_key().and_then(|cp| char::from_u32(cp as u32)).is_some_and(|ch| handle_char(&g, ch)));
+        if handled {
+            e.skip(false);
+        }
+    });
+}
+
+/// Mouse-driven (or otherwise externally driven) focus/selection changes on
+/// the content controls: clicking a row, or a screen reader's own virtual
+/// cursor landing on one.
+fn bind_content_selection(gui: &Gui) {
+    let g = gui.clone();
+    gui.list.on_item_focused(move |e: ListCtrlEventData| {
+        if g.suppress.get() {
+            return;
+        }
+        let index = e.get_item_index();
+        if index >= 0 {
+            move_to(&g, index as usize);
+        }
+    });
+    let g = gui.clone();
+    gui.list.on_item_activated(move |_| activate(&g));
+
+    let g = gui.clone();
+    gui.tree.on_selection_changed(move |e: TreeEventData| {
+        if g.suppress.get() {
+            return;
+        }
+        let Some(item) = e.get_item() else { return };
+        let index = g
+            .tree
+            .get_custom_data(&item)
+            .and_then(|data| data.downcast_ref::<usize>().copied());
+        if let Some(index) = index {
+            move_to(&g, index);
+        }
+    });
+    let g = gui.clone();
+    gui.tree.on_item_activated(move |_| activate(&g));
+}
+
+// ---- The menu bar -----------------------------------------------------------
+
+fn build_menu_bar() -> MenuBar {
+    let mut builder = MenuBar::builder();
+    for bar in menu::BARS {
+        let mut menu_builder = Menu::builder();
+        for item in bar.items {
+            menu_builder = match item {
+                MenuEntry::Separator => menu_builder.append_separator(),
+                MenuEntry::Entry(command) => {
+                    let label = command.label().unwrap_or("").to_string();
+                    match command.kind() {
+                        Kind::Normal => menu_builder.append_item(command.id(), &label, ""),
+                        Kind::Checkbox => menu_builder.append_check_item(command.id(), &label, ""),
+                        Kind::Radio => menu_builder.append_radio_item(command.id(), &label, ""),
+                    }
+                }
+            };
+        }
+        builder = builder.append(menu_builder.build(), bar.name);
+    }
+    builder.build()
+}
+
+/// `SelectFeed`'s label is the feed's own user-editable name, so unlike
+/// every other command it can go stale when a template changes; refreshed
+/// here at startup and whenever the settings dialog closes.
+fn sync_feed_labels(gui: &Gui) {
+    let s = gui.state.borrow();
+    for feed in Feed::ALL {
+        let command = Command::SelectFeed(*feed);
+        if let Some(item) = gui.menu_bar.find_item(command.id()) {
+            item.set_label(&s.app.command_label(command));
+        }
+    }
+}
+
+/// Refresh which feed reads as current and whether speech reads as on,
+/// after either changes.
+fn sync_menu_checks(gui: &Gui) {
+    let s = gui.state.borrow();
+    for bar in menu::BARS {
+        for item in bar.items {
+            if let MenuEntry::Entry(command) = item {
+                if command.kind() != Kind::Normal {
+                    let marked = s.app.command_marked(*command, s.speaker.is_enabled());
+                    gui.menu_bar.check_item(command.id(), marked);
+                }
+            }
+        }
+    }
+}
+
+fn bind_menu_events(gui: &Gui) {
+    let g = gui.clone();
+    gui.frame.on_menu_selected(move |e: MenuEventData| {
+        if let Some(command) = Command::from_id(e.get_id()) {
+            run_command(&g, command);
+        }
+    });
+
+    let g = gui.clone();
+    gui.frame.on_menu_highlighted(move |e: MenuEventData| {
+        let Some(command) = Command::from_id(e.get_id()) else { return };
+        let s = g.state.borrow();
+        if !s.speaker.announces_focus() {
+            return;
+        }
+        let speech_active = s.speaker.is_enabled();
+        let text = s.app.text(
+            Template::MenuItemFocus,
+            &[
+                ("name", &s.app.command_label(command)),
+                ("state", &s.app.command_state_text(command, speech_active)),
+                ("index", ""),
+                ("count", ""),
+            ],
+        );
+        drop(s);
+        g.state.borrow_mut().speaker.announce(&text);
+    });
+
+    let g = gui.clone();
+    gui.frame.on_menu_opened(move |_| {
+        let s = g.state.borrow();
+        if !s.speaker.announces_focus() {
+            return;
+        }
+        let text = s.app.text(Template::MenuOpened, &[("label", "")]);
+        drop(s);
+        g.state.borrow_mut().speaker.announce(&text);
+    });
+}
+
+// ---- The settings dialog ----------------------------------------------------
+
+fn open_settings(gui: &Gui) {
+    {
+        let mut s = gui.state.borrow_mut();
+        if s.app.view == View::Settings {
+            return;
+        }
+        // Entering from help, keep the view help itself would return to
+        // rather than building a loop between the two.
+        if s.app.view != View::Help {
+            s.app.previous_view = s.app.view;
+        }
+        s.app.view = View::Settings;
+        s.app.settings.open();
+    }
+
+    let title = gui.state.borrow().app.list_title();
+    {
+        let s = gui.state.borrow();
+        if s.speaker.announces_focus() {
+            let intro = s.app.text(
+                Template::SettingsIntro,
+                &[
+                    ("tab", s.app.settings.tab_name()),
+                    ("index", &(s.app.settings.tab() + 1).to_string()),
+                    ("count", &TABS.len().to_string()),
+                ],
+            );
+            drop(s);
+            gui.state.borrow_mut().speaker.announce(&intro);
+        }
+    }
+
+    let dialog = Dialog::builder(&gui.frame, &title)
+        .with_style(DialogStyle::DefaultDialogStyle | DialogStyle::ResizeBorder)
+        .with_size(760, 520)
+        .build();
+
+    let notebook = Notebook::builder(&dialog).build();
+    for tab_index in 0..TABS.len() {
+        let page = build_settings_page(&notebook, tab_index, gui);
+        notebook.add_page(&page, TABS[tab_index].name, tab_index == 0, None);
+    }
+    {
+        let g = gui.clone();
+        notebook.on_page_changed(move |e: NotebookPageChangedEvent| {
+            if let Some(selection) = e.get_selection() {
+                g.state.borrow_mut().app.settings.select_tab(selection as usize);
+            }
+        });
+    }
+
+    let close_button = Button::builder(&dialog).with_label("Close").build();
+    {
+        let dialog = dialog;
+        close_button.on_click(move |_| dialog.end_modal(ID_OK));
+    }
+    {
+        let dialog = dialog;
+        dialog.on_key_down(move |e: WindowEventData| {
+            if let WindowEventData::Keyboard(kb) = &e {
+                if kb.get_key_code() == Some(WXK_ESCAPE) {
+                    dialog.end_modal(ID_CANCEL);
+                    e.skip(false);
+                }
+            }
+        });
+    }
+
+    let dialog_sizer = BoxSizer::builder(Orientation::Vertical).build();
+    dialog_sizer.add(&notebook, 1, SizerFlag::Expand | SizerFlag::All, 8);
+    dialog_sizer.add(&close_button, 0, SizerFlag::AlignRight | SizerFlag::All, 8);
+    dialog.set_sizer(dialog_sizer, true);
+
+    dialog.show_modal();
+    dialog.destroy();
+
+    close_settings(gui);
+}
+
+/// One tab's worth of the settings dialog: a grouped tree of its fields next
+/// to a single editor pane (a `TextCtrl`, or for the one non-text field a
+/// `CheckBox`) that shows whichever field is currently selected in the tree.
+fn build_settings_page(parent: &Notebook, tab_index: usize, gui: &Gui) -> Panel {
+    let panel = Panel::builder(parent).build();
+    let main_sizer = BoxSizer::builder(Orientation::Horizontal).build();
+
+    let tree = TreeCtrl::builder(&panel)
+        .with_style(TreeCtrlStyle::HasButtons | TreeCtrlStyle::LinesAtRoot | TreeCtrlStyle::HideRoot | TreeCtrlStyle::Single)
+        .build();
+
+    let editor_panel = Panel::builder(&panel).build();
+    let editor_sizer = BoxSizer::builder(Orientation::Vertical).build();
+    let description = StaticText::builder(&editor_panel).with_label("").build();
+    let text_ctrl = TextCtrl::builder(&editor_panel).with_style(TextCtrlStyle::MultiLine).build();
+    let checkbox = CheckBox::builder(&editor_panel)
+        .with_label(Field::EscapeExits.label())
+        .build();
+    checkbox.show(false);
+    editor_sizer.add(&description, 0, SizerFlag::Expand | SizerFlag::All, 6);
+    editor_sizer.add(&text_ctrl, 1, SizerFlag::Expand | SizerFlag::All, 6);
+    editor_sizer.add(&checkbox, 0, SizerFlag::Expand | SizerFlag::All, 6);
+    editor_panel.set_sizer(editor_sizer, true);
+
+    main_sizer.add(&tree, 1, SizerFlag::Expand | SizerFlag::All, 6);
+    main_sizer.add(&editor_panel, 1, SizerFlag::Expand | SizerFlag::All, 6);
+    panel.set_sizer(main_sizer, true);
+
+    let fields = fields_of(tab_index);
+    if let Some(root) = tree.add_root("Fields", None, None) {
+        let mut index = 0;
+        while index < fields.len() {
+            let group = fields[index].group();
+            let start = index;
+            while index < fields.len() && fields[index].group() == group {
+                index += 1;
+            }
+            if let Some(group_item) = tree.append_item(&root, group.name(), None, None) {
+                for (position, field) in fields[start..index].iter().enumerate() {
+                    let field_index = start + position;
+                    tree.append_item_with_data(&group_item, field.label(), field_index, None, None);
+                }
+            }
+        }
+        tree.expand_all();
+    }
+
+    {
+        let g = gui.clone();
+        tree.on_selection_changed(move |e: TreeEventData| {
+            let Some(item) = e.get_item() else { return };
+            let field_index = tree.get_custom_data(&item).and_then(|d| d.downcast_ref::<usize>().copied());
+            let Some(field_index) = field_index else {
+                text_ctrl.show(false);
+                checkbox.show(false);
+                description.set_label("");
+                return;
+            };
+
+            g.state.borrow_mut().app.settings.select_field(field_index);
+
+            let (field, help_text, is_toggle, announces) = {
+                let s = g.state.borrow();
+                let field = s.app.settings.fields()[field_index];
+                let count = s.app.settings.fields().len();
+                (
+                    field,
+                    s.app.field_help_text(field, field_index, count),
+                    s.app.settings.is_toggle(),
+                    s.speaker.announces_focus(),
+                )
+            };
+            description.set_label(&help_text);
+
+            if is_toggle {
+                let value = g.state.borrow().app.preferences.escape_exits;
+                text_ctrl.show(false);
+                checkbox.set_value(value);
+                checkbox.show(true);
+                checkbox.set_focus();
+            } else if let Field::Template(template) = field {
+                let value = g.state.borrow().app.templates.get(template).to_string();
+                checkbox.show(false);
+                text_ctrl.set_value(&value);
+                text_ctrl.show(true);
+                text_ctrl.set_focus();
+            }
+            editor_panel.layout();
+
+            if announces {
+                let text = g.state.borrow().app.field_focus_text(field_index);
+                g.state.borrow_mut().speaker.announce(&text);
+            }
+        });
+    }
+
+    {
+        let g = gui.clone();
+        text_ctrl.on_text_updated(move |e: TextEventData| {
+            let field = g.state.borrow().app.settings.focused_field();
+            if let Some(Field::Template(template)) = field {
+                if let Some(value) = e.get_string() {
+                    g.state.borrow_mut().app.templates.set(template, value);
+                }
+            }
+        });
+    }
+
+    {
+        let g = gui.clone();
+        checkbox.on_toggled(move |e: CheckBoxEventData| {
+            g.state.borrow_mut().app.preferences.escape_exits = e.is_checked();
+        });
+    }
+
+    {
+        let g = gui.clone();
+        tree.on_key_down(move |e: WindowEventData| {
+            let Some(WXK_F5) = (if let WindowEventData::Keyboard(kb) = &e { kb.get_key_code() } else { None }) else {
+                return;
+            };
+            let reset = {
+                let mut s = g.state.borrow_mut();
+                let templates = &mut s.app.templates as *mut _;
+                // SAFETY: `settings` and `templates` are disjoint fields of `app`;
+                // the raw pointer only works around the borrow checker not seeing
+                // through the two-level field access on a `RefMut`.
+                s.app.settings.reset_field(unsafe { &mut *templates })
+            };
+            if let Some(field) = reset {
+                let (value, status) = {
+                    let s = g.state.borrow();
+                    (
+                        s.app.templates.get(field).to_string(),
+                        s.app.text(
+                            Template::TemplateReset,
+                            &[("name", field.label()), ("default", field.default_text())],
+                        ),
+                    )
+                };
+                text_ctrl.set_value(&value);
+                set_status(&g, status);
+            }
+            e.skip(false);
+        });
+    }
+
+    panel
+}
+
+/// Leave the dialog, writing the edits to disk.
+///
+/// A template that will not render as its author intended is reported in
+/// preference to the save itself: the file being written matters less than
+/// the user knowing that one of their announcements is broken. It is saved
+/// either way — their text is theirs, mistake or not.
+fn close_settings(gui: &Gui) {
+    let (saved, problem, previous) = {
+        let s = gui.state.borrow();
+        let saved = config::save(&s.app.templates).and_then(|path| {
+            preferences::save(&s.app.preferences)?;
+            Ok(path)
+        });
+        let problem = s
+            .app
+            .settings
+            .fields()
+            .iter()
+            .find_map(|field| {
+                let Field::Template(template) = field else {
+                    return None;
+                };
+                validate(*template, s.app.templates.get(*template)).map(|problem| (field.label(), problem))
+            })
+            .map(|(label, problem)| s.app.text(Template::TemplateInvalid, &[("name", label), ("problem", &problem)]));
+        (saved, problem, s.app.previous_view)
+    };
+
+    let status = match (saved, problem) {
+        (Err(error), _) => gui.state.borrow().app.text(Template::SettingsSaveFailed, &[("error", &error)]),
+        (Ok(_), Some(problem)) => problem,
+        (Ok(path), None) => gui
+            .state
+            .borrow()
+            .app
+            .text(Template::SettingsSaved, &[("path", &path.display().to_string())]),
+    };
+
+    gui.state.borrow_mut().app.view = previous;
+    sync_feed_labels(gui);
+    enter_view(gui, status);
+}
+
+// ---- Background work --------------------------------------------------------
+
+/// Run network work off the GUI thread, reporting back through a channel
+/// polled from an idle handler (see `bind_worker_idle`) — the GUI's own
+/// state lives behind an `Rc`, which cannot cross threads, so the worker
+/// only ever produces plain `Send` data.
+fn spawn_worker() -> (mpsc::Sender<Request>, mpsc::Receiver<WorkResult>) {
+    let (request_tx, request_rx) = mpsc::channel::<Request>();
+    let (result_tx, result_rx) = mpsc::channel::<WorkResult>();
+
+    thread::spawn(move || {
+        let client = hn::Client::new();
+        for request in request_rx {
+            let sent = match request {
+                Request::Stories { generation, feed } => {
+                    let result = client.story_ids(feed, STORY_LIMIT).map(|ids| client.items(&ids));
+                    result_tx.send(WorkResult::Stories { generation, feed, result })
+                }
+                Request::Comments { generation, story } => {
+                    let rows = client.comment_thread(&story.kids, COMMENT_LIMIT);
+                    // An empty result for a story that advertises comments means
+                    // the fetch failed, not that the thread is empty.
+                    let result = if rows.is_empty() && !story.kids.is_empty() {
+                        Err("no comments could be fetched".to_string())
+                    } else {
+                        Ok(rows)
+                    };
+                    result_tx.send(WorkResult::Comments { generation, result })
+                }
+            };
+            if sent.is_err() {
+                break; // The GUI is gone; so are we.
+            }
+            wxdragon::call_after(Box::new(|| {}));
+        }
+    });
+
+    (request_tx, result_rx)
+}
+
+fn bind_worker_idle(gui: &Gui, result_rx: mpsc::Receiver<WorkResult>) {
+    let g = gui.clone();
+    gui.frame.on_idle(move |_| {
+        while let Ok(result) = result_rx.try_recv() {
+            apply_result(&g, result);
+        }
+    });
+}
+
+fn apply_result(gui: &Gui, result: WorkResult) {
+    match result {
+        WorkResult::Stories { generation, feed, result } => {
+            if generation != gui.state.borrow().generation {
+                return; // Superseded by newer navigation.
+            }
+            gui.state.borrow_mut().app.loading = false;
+            let feed_title = gui.state.borrow().app.templates.feed_title(feed);
+            match result {
+                Ok(stories) => {
+                    let count = stories.len();
+                    {
+                        let mut s = gui.state.borrow_mut();
+                        s.app.stories = stories;
+                        s.app.story_cursor = 0;
+                        s.app.view = View::Stories;
+                    }
+                    let status = gui
+                        .state
+                        .borrow()
+                        .app
+                        .text(Template::StatusFeedLoaded, &[("feed", &feed_title), ("count", &count.to_string())]);
+                    enter_view(gui, status);
+                }
+                Err(err) => {
+                    let status = gui
+                        .state
+                        .borrow()
+                        .app
+                        .text(Template::StatusFeedError, &[("feed", &feed_title), ("error", &err)]);
+                    set_status(gui, status);
+                }
+            }
+        }
+
+        WorkResult::Comments { generation, result } => {
+            if generation != gui.state.borrow().generation {
+                return;
+            }
+            gui.state.borrow_mut().app.loading = false;
+            let title = gui
+                .state
+                .borrow()
+                .app
+                .comment_story
+                .as_ref()
+                .and_then(|story| story.title.clone())
+                .unwrap_or_default();
+
+            match result {
+                Ok(comments) => {
+                    let count = comments.len();
+                    {
+                        let mut s = gui.state.borrow_mut();
+                        s.app.comments = comments;
+                        s.app.comment_cursor = 0;
+                        s.app.view = View::Comments;
+                    }
+                    let status = gui
+                        .state
+                        .borrow()
+                        .app
+                        .text(Template::StatusCommentsLoaded, &[("count", &count.to_string()), ("title", &title)]);
+                    enter_view(gui, status);
+                }
+                Err(err) => {
+                    gui.state.borrow_mut().app.comment_story = None;
+                    let status = gui
+                        .state
+                        .borrow()
+                        .app
+                        .text(Template::StatusCommentsError, &[("error", &err), ("title", &title)]);
+                    set_status(gui, status);
+                }
+            }
+        }
+    }
+}

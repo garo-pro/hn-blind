@@ -1,0 +1,67 @@
+use wxdragon::prelude::*;
+
+fn main() {
+    SystemOptions::set_option_by_int("msw.no-manifest-check", 1);
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("trace")).init();
+    let _ = wxdragon::main(|_| {
+        let frame = Frame::builder()
+            .with_title("Generic Dialog Test")
+            .with_size(Size::new(400, 300))
+            .build();
+
+        // Create a button to show the generic dialog
+        let button = Button::builder(&frame).with_label("Show Generic Dialog").build();
+
+        button.on_click(move |_| {
+            // Create a generic dialog using the new builder
+            let dialog = Dialog::builder(&frame, "My Generic Dialog")
+                .with_style(DialogStyle::DefaultDialogStyle | DialogStyle::ResizeBorder)
+                .with_size(300, 200)
+                .build();
+
+            // Add some content to the dialog
+            let panel = Panel::builder(&dialog).build();
+
+            let text = StaticText::builder(&panel)
+                .with_label("This is a generic dialog created with wxDragon!")
+                .build();
+
+            let ok_button = Button::builder(&panel).with_label("OK").build();
+
+            ok_button.on_click(move |_| {
+                dialog.end_modal(ID_OK);
+            });
+
+            dialog.on_destroy(move |_| {
+                log::info!("Dialog destroyed");
+            });
+
+            // Layout the panel content
+            let panel_sizer = BoxSizer::builder(Orientation::Vertical).build();
+            panel_sizer.add(&text, 1, SizerFlag::Expand | SizerFlag::All, 10);
+            panel_sizer.add(&ok_button, 0, SizerFlag::AlignCentre | SizerFlag::All, 10);
+            panel.set_sizer(panel_sizer, true);
+
+            // Layout the dialog
+            let dialog_sizer = BoxSizer::builder(Orientation::Vertical).build();
+            dialog_sizer.add(&panel, 1, SizerFlag::Expand, 0);
+            dialog.set_sizer(dialog_sizer, true);
+
+            // Show the dialog modally
+            let result = dialog.show_modal();
+            log::info!("Dialog returned: {result}");
+
+            // Explicitly destroy the dialog after the modal loop ends to free resources
+            dialog.destroy();
+            // Dialog is explicitly destroyed above to avoid retaining it via event closures
+        });
+
+        // Layout the main frame
+        let frame_sizer = BoxSizer::builder(Orientation::Vertical).build();
+        frame_sizer.add(&button, 0, SizerFlag::AlignCentre | SizerFlag::All, 20);
+        frame.set_sizer(frame_sizer, true);
+
+        frame.show(true);
+        frame.centre();
+    });
+}
