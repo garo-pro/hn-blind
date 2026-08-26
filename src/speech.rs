@@ -1,20 +1,12 @@
 //! Direct speech and braille output via Prism.
 //!
-//! This complements, rather than duplicates, what the native controls say.
-//! wxWidgets exposes *what is focused* to the platform's accessibility API
-//! and the user's screen reader announces it. Prism handles output that has
-//! no focused control behind it: load progress, errors, feed changes, and
-//! explicit "read this to me now" requests. Keeping the two responsibilities
-//! disjoint is what stops every action being spoken twice.
+//! This complements, rather than duplicates, what the native controls say. wxWidgets exposes *what is focused* to the platform's accessibility API and the user's screen reader announces it. Prism handles output that has no focused control behind it: load progress, errors, feed changes, and explicit "read this to me now" requests. Keeping the two responsibilities disjoint is what stops every action being spoken twice.
 
 use prism::{Backend, BackendFeatures, BackendId, Context};
 
 /// Backends that are speech engines rather than screen readers.
 ///
-/// The distinction drives one real decision: if a screen reader is running it
-/// announces focus changes from the native controls, so we must stay quiet.
-/// If Prism only found a bare TTS engine, nothing else is speaking and we
-/// have to announce focus ourselves.
+/// The distinction drives one real decision: if a screen reader is running it announces focus changes from the native controls, so we must stay quiet. If Prism only found a bare TTS engine, nothing else is speaking and we have to announce focus ourselves.
 const TTS_ONLY: [BackendId; 6] = [
     BackendId::SAPI,
     BackendId::ONE_CORE,
@@ -25,14 +17,12 @@ const TTS_ONLY: [BackendId; 6] = [
 ];
 
 pub struct Speaker {
-    // Declaration order is load-bearing: `Backend` must drop before `Context`,
-    // because dropping the context shuts the library down underneath it.
+    // Declaration order is load-bearing: `Backend` must drop before `Context`, because dropping the context shuts the library down underneath it.
     backend: Option<Backend>,
     _context: Option<Context>,
     features: BackendFeatures,
     enabled: bool,
-    /// True when a screen reader is driving output, meaning it already
-    /// announces focus from the controls themselves and we should not.
+    /// True when a screen reader is driving output, meaning it already announces focus from the controls themselves and we should not.
     screen_reader: bool,
     status: String,
 }
@@ -40,9 +30,7 @@ pub struct Speaker {
 impl Speaker {
     /// Connect to the best available screen reader or TTS backend.
     ///
-    /// Failure is never fatal: with no backend the app is still fully usable
-    /// through the screen reader's own reading of the native controls, so we
-    /// record why and carry on silently.
+    /// Failure is never fatal: with no backend the app is still fully usable through the screen reader's own reading of the native controls, so we record why and carry on silently.
     pub fn new() -> Self {
         match Self::connect() {
             Ok(speaker) => speaker,
@@ -90,15 +78,12 @@ impl Speaker {
 
     /// Whether *we* are responsible for announcing focus changes.
     ///
-    /// Only true when Prism is driving a bare TTS engine: with a screen reader
-    /// attached, the list or tree already announces the focused row and
-    /// speaking here would double every movement.
+    /// Only true when Prism is driving a bare TTS engine: with a screen reader attached, the list or tree already announces the focused row and speaking here would double every movement.
     pub fn announces_focus(&self) -> bool {
         self.is_enabled() && !self.screen_reader
     }
 
-    /// Turn Prism output on or off, returning the new state. Users running a
-    /// screen reader that already announces everything may prefer it off.
+    /// Turn Prism output on or off, returning the new state. Users running a screen reader that already announces everything may prefer it off.
     pub fn toggle(&mut self) -> bool {
         if self.backend.is_none() {
             return false;
@@ -112,8 +97,7 @@ impl Speaker {
 
     /// Speak `text`, interrupting anything in progress.
     ///
-    /// Prefers `output`, which routes to a braille display as well as speech
-    /// when the backend supports both.
+    /// Prefers `output`, which routes to a braille display as well as speech when the backend supports both.
     pub fn announce(&mut self, text: &str) {
         if !self.enabled || text.is_empty() {
             return;
@@ -122,8 +106,7 @@ impl Speaker {
             return;
         };
 
-        // Errors here are deliberately swallowed: a backend that has gone away
-        // mid-session must not take the UI down with it.
+        // Errors here are deliberately swallowed: a backend that has gone away mid-session must not take the UI down with it.
         if self.features.contains(BackendFeatures::SUPPORTS_OUTPUT) {
             let _ = backend.output(text, true);
         } else if self.features.contains(BackendFeatures::SUPPORTS_SPEAK) {
@@ -150,8 +133,7 @@ impl Default for Speaker {
 
 /// Find the registry id whose registered name matches the acquired backend.
 ///
-/// Prism hands back a `Backend` without its id, so we match on name against the
-/// registry to learn which backend we actually got.
+/// Prism hands back a `Backend` without its id, so we match on name against the registry to learn which backend we actually got.
 fn identify(context: &Context, name: &str) -> Option<BackendId> {
     if let Some(id) = context.id_by_name(name) {
         return Some(id);

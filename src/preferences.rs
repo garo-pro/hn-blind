@@ -1,12 +1,8 @@
 //! Yes/no preferences, persisted between runs.
 //!
-//! Kept out of `config.rs`: that file's contract is "one string per changed
-//! template," and a switch such as whether Escape quits the application is
-//! neither a template nor text a user edits, so it gets its own small file
-//! rather than stretching that contract to fit.
+//! Kept out of `config.rs`: that file's contract is "one string per changed template," and a switch such as whether Escape quits the application is neither a template nor text a user edits, so it gets its own small file rather than stretching that contract to fit.
 //!
-//! As with the templates file, a missing, unreadable or corrupt file is never
-//! fatal: the application starts with its defaults and says why.
+//! As with the templates file, a missing, unreadable or corrupt file is never fatal: the application starts with its defaults and says why.
 
 use std::path::PathBuf;
 
@@ -18,21 +14,18 @@ const FILE: &str = "preferences.json";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Preferences {
-    /// Whether Escape, pressed at the story list, quits the application
-    /// instead of announcing that there is nowhere further back to go.
+    /// Whether Escape, pressed at the story list, quits the application instead of announcing that there is nowhere further back to go.
     pub escape_exits: bool,
 }
 
-/// The preferences file's path, or `None` if the platform gave us no home to
-/// put it in.
+/// The preferences file's path, or `None` if the platform gave us no home to put it in.
 pub fn path() -> Option<PathBuf> {
     Some(config::config_dir()?.join(FILE))
 }
 
 /// Load the user's preferences, falling back to defaults for anything missing.
 ///
-/// Returns the preferences and, when something was wrong with the file, a
-/// sentence about it fit to be spoken as the first status message.
+/// Returns the preferences and, when something was wrong with the file, a sentence about it fit to be spoken as the first status message.
 pub fn load() -> (Preferences, Option<String>) {
     let mut preferences = Preferences::default();
 

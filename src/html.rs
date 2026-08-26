@@ -1,13 +1,8 @@
-//! Converts the small, predictable subset of HTML that HN puts in comment and
-//! self-post bodies into plain text.
+//! Converts the small, predictable subset of HTML that HN puts in comment and self-post bodies into plain text.
 //!
-//! HN emits `<p>` (unclosed) for paragraph breaks, `<i>`, `<b>`, `<code>`,
-//! `<pre>`, and `<a href="...">` links whose text is usually the URL itself. It
-//! escapes `& < > " '` and slashes as entities. Nothing here needs a real HTML
-//! parser, and a screen reader should never be handed raw markup.
+//! HN emits `<p>` (unclosed) for paragraph breaks, `<i>`, `<b>`, `<code>`, `<pre>`, and `<a href="...">` links whose text is usually the URL itself. It escapes `& < > " '` and slashes as entities. Nothing here needs a real HTML parser, and a screen reader should never be handed raw markup.
 
-/// Convert an HN HTML fragment to plain text suitable for speech and for an
-/// accessibility node label.
+/// Convert an HN HTML fragment to plain text suitable for speech and for an accessibility node label.
 pub fn to_text(html: &str) -> String {
     let stripped = strip_tags(html);
     let decoded = decode_entities(&stripped);
@@ -16,9 +11,7 @@ pub fn to_text(html: &str) -> String {
 
 /// Append literal text, folding source newlines to spaces.
 ///
-/// In HTML a raw newline is ordinary whitespace, not a line break. Folding it
-/// here means the only newlines downstream are the ones tags introduced, so
-/// paragraph structure survives whitespace normalization.
+/// In HTML a raw newline is ordinary whitespace, not a line break. Folding it here means the only newlines downstream are the ones tags introduced, so paragraph structure survives whitespace normalization.
 fn push_text(out: &mut String, text: &str) {
     for c in text.chars() {
         out.push(if c == '\n' || c == '\r' { ' ' } else { c });
@@ -155,8 +148,7 @@ fn normalize_whitespace(text: &str) -> String {
     out
 }
 
-/// Flatten text to a single line, for use as a list-item label where newlines
-/// would be meaningless.
+/// Flatten text to a single line, for use as a list-item label where newlines would be meaningless.
 pub fn single_line(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     let mut space = false;

@@ -1,11 +1,8 @@
 //! Prints what hn-blind would announce, without opening a window.
 //!
-//! Useful for checking the API client and the wording of labels against live
-//! data: `cargo run --example preview -- top 5`
+//! Useful for checking the API client and the wording of labels against live data: `cargo run --example preview -- top 5`
 //!
-//! `cargo run --example preview -- templates` instead lists every phrase the
-//! application can say, with its placeholders — the same set the settings
-//! dialog offers, in a form that fits in a terminal and a bug report.
+//! `cargo run --example preview -- templates` instead lists every phrase the application can say, with its placeholders — the same set the settings dialog offers, in a form that fits in a terminal and a bug report.
 
 use hn_blind::app::{App, View};
 use hn_blind::config;
@@ -68,8 +65,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("{}", app.row_label(index));
     }
 
-    // And the first comment as `P` would read it out: the one piece of
-    // wording that never appears in a row label.
+    // And the first comment as `P` would read it out: the one piece of wording that never appears in a row label.
     println!("\n== read in full ==\n{}", app.selected_detail());
 
     Ok(())

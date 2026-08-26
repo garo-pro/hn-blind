@@ -1,40 +1,19 @@
 //! Every phrase this application says out loud, as an editable template.
 //!
-//! Nothing here is cosmetic. A screen reader user hears these strings hundreds
-//! of times an hour, and what is a sensible default for one listener is
-//! intolerable padding for another: some want the domain and the score on every
-//! row, some want the headline and nothing else, and some want it in a language
-//! this application does not ship. So no announcement is built by string
-//! concatenation in the code — each one is a named template the user can edit
-//! in the settings dialog (see `settings.rs`) and which is persisted to disk
-//! (see `config.rs`).
+//! Nothing here is cosmetic. A screen reader user hears these strings hundreds of times an hour, and what is a sensible default for one listener is intolerable padding for another: some want the domain and the score on every row, some want the headline and nothing else, and some want it in a language this application does not ship. So no announcement is built by string concatenation in the code — each one is a named template the user can edit in the settings dialog (see `settings.rs`) and which is persisted to disk (see `config.rs`).
 //!
 //! # Template syntax
 //!
-//! - `{name}` is replaced by a value. Which names are available differs per
-//!   template and is listed in [`Template::placeholders`]; an unknown name
-//!   renders as nothing.
-//! - `[...]` marks an optional group: it disappears entirely if any placeholder
-//!   directly inside it is empty. This is what lets one template cover a story
-//!   that has a link, a score and an author and one that has none of the three,
-//!   without leaving a trail of stray commas for the synthesizer to read.
-//!   Groups nest, and each nested group is judged on its own placeholders.
-//! - `\n` and `\t` produce a line break and a tab, which matters for the
-//!   read-in-full templates; the settings editor is single-line, so this is the
-//!   only way to type one.
-//! - A backslash makes the next character literal, so `\[`, `\{` and `\\` are
-//!   how those characters are written. Doubling them would read more nicely but
-//!   cannot work: a group closing inside another ends in `]]`, which would be
-//!   indistinguishable from an escaped bracket.
+//! - `{name}` is replaced by a value. Which names are available differs per template and is listed in [`Template::placeholders`]; an unknown name renders as nothing.
+//! - `[...]` marks an optional group: it disappears entirely if any placeholder directly inside it is empty. This is what lets one template cover a story that has a link, a score and an author and one that has none of the three, without leaving a trail of stray commas for the synthesizer to read. Groups nest, and each nested group is judged on its own placeholders.
+//! - `\n` and `\t` produce a line break and a tab, which matters for the read-in-full templates; the settings editor is single-line, so this is the only way to type one.
+//! - A backslash makes the next character literal, so `\[`, `\{` and `\\` are how those characters are written. Doubling them would read more nicely but cannot work: a group closing inside another ends in `]]`, which would be indistinguishable from an escaped bracket.
 //!
-//! Rendering never fails. A template with an unbalanced bracket produces its
-//! own text rather than an error, because a user halfway through an edit still
-//! needs the application to talk to them.
+//! Rendering never fails. A template with an unbalanced bracket produces its own text rather than an error, because a user halfway through an edit still needs the application to talk to them.
 
 use crate::hn::Feed;
 
-/// A broad category, used to group the fields in the settings dialog so the
-/// list stays navigable as the number of templates grows.
+/// A broad category, used to group the fields in the settings dialog so the list stays navigable as the number of templates grows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Group {
     Stories,
@@ -45,9 +24,7 @@ pub enum Group {
     Window,
     Time,
     Words,
-    /// Preferences that are not wording at all, such as what Escape does at
-    /// the story list. Its one field lives in `settings::Field::EscapeExits`
-    /// rather than in the template table below, since it has no text to edit.
+    /// Preferences that are not wording at all, such as what Escape does at the story list. Its one field lives in `settings::Field::EscapeExits` rather than in the template table below, since it has no text to edit.
     General,
     Menu,
 }
@@ -69,17 +46,14 @@ impl Group {
     }
 }
 
-/// Declares the template registry: the enum, the iteration order, and the
-/// per-template metadata the settings dialog reads.
+/// Declares the template registry: the enum, the iteration order, and the per-template metadata the settings dialog reads.
 ///
-/// One macro rather than five parallel tables, because a template whose default
-/// text and placeholder list drifted apart would be a silent wording bug.
+/// One macro rather than five parallel tables, because a template whose default text and placeholder list drifted apart would be a silent wording bug.
 macro_rules! templates {
     ($($variant:ident, $id:literal, $group:expr, $label:literal, $default:literal, [$($ph:literal),*];)*) => {
         /// One named, user-editable announcement.
         ///
-        /// Declaration order is the order the settings dialog presents, so
-        /// related templates are kept adjacent and grouped.
+        /// Declaration order is the order the settings dialog presents, so related templates are kept adjacent and grouped.
         #[derive(Debug, Clone, Copy, PartialEq, Eq)]
         pub enum Template {
             $($variant,)*
@@ -89,8 +63,7 @@ macro_rules! templates {
             /// Every template, in presentation order.
             pub const ALL: &'static [Template] = &[$(Template::$variant,)*];
 
-            /// Stable key used in the settings file. Unlike the variant name
-            /// this must not change, or a user's edits stop loading.
+            /// Stable key used in the settings file. Unlike the variant name this must not change, or a user's edits stop loading.
             pub fn id(self) -> &'static str {
                 match self { $(Template::$variant => $id,)* }
             }
@@ -147,6 +120,12 @@ templates! {
     CommentsTitle, "comments_title", Group::Comments, "Comment list title",
         "{count} comments on {title}",
         ["count", "title", "author", "score"];
+    CommentCollapsed, "comment_collapsed", Group::Comments, "Replies hidden",
+        "collapsed, {replies} replies hidden",
+        ["replies", "level", "author", "label"];
+    CommentExpanded, "comment_expanded", Group::Comments, "Replies shown",
+        "expanded, {replies} replies",
+        ["replies", "level", "author", "label"];
 
     // ---- Help ------------------------------------------------------------
     HelpRow, "help_row", Group::Help, "Help row",
@@ -358,8 +337,7 @@ templates! {
 /// The full set of templates in force, defaults plus the user's edits.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Templates {
-    /// Indexed by `Template as usize`, so lookup is an array index rather than
-    /// a hash on a path that runs for every row of every list.
+    /// Indexed by `Template as usize`, so lookup is an array index rather than a hash on a path that runs for every row of every list.
     values: Vec<String>,
 }
 
@@ -391,9 +369,7 @@ impl Templates {
         self.values[template as usize] == template.default_text()
     }
 
-    /// The templates the user has actually changed. Only these are written to
-    /// the settings file, so improvements to the defaults still reach anyone
-    /// who has not overridden them.
+    /// The templates the user has actually changed. Only these are written to the settings file, so improvements to the defaults still reach anyone who has not overridden them.
     pub fn changed(&self) -> impl Iterator<Item = (Template, &str)> {
         Template::ALL
             .iter()
@@ -439,9 +415,7 @@ impl Frame {
 
 /// Substitute `args` into a template string.
 ///
-/// Deliberately total: any input produces some output. Malformed syntax is
-/// rendered as the literal text the user typed, which they will hear and can
-/// correct, rather than an error that leaves them with silence.
+/// Deliberately total: any input produces some output. Malformed syntax is rendered as the literal text the user typed, which they will hear and can correct, rather than an error that leaves them with silence.
 pub fn render_text(source: &str, args: &[(&str, &str)]) -> String {
     let mut frames = vec![Frame::new()];
     let mut chars = source.chars().peekable();
@@ -526,8 +500,7 @@ fn push_str(frames: &mut [Frame], text: &str) {
 
 /// Describe the first problem with a template, in a sentence fit to be spoken.
 ///
-/// Used when the settings dialog is closed rather than on every keystroke:
-/// a half-typed placeholder is not a mistake, it is the middle of a word.
+/// Used when the settings dialog is closed rather than on every keystroke: a half-typed placeholder is not a mistake, it is the middle of a word.
 pub fn validate(template: Template, source: &str) -> Option<String> {
     let allowed = template.placeholders();
     let mut depth = 0usize;
@@ -584,8 +557,7 @@ mod tests {
         ids.dedup();
         assert_eq!(ids.len(), count, "template ids must be unique");
 
-        // A default that used a placeholder it does not declare would be a
-        // wording bug nobody would notice until it was spoken.
+        // A default that used a placeholder it does not declare would be a wording bug nobody would notice until it was spoken.
         for template in Template::ALL {
             assert_eq!(
                 validate(*template, template.default_text()),
@@ -653,8 +625,7 @@ mod tests {
         assert_eq!(render_text(r"\{a\} \[b\]", &[("a", "x")]), "{a} [b]");
         assert_eq!(render_text(r"one\ntwo", &[]), "one\ntwo");
         assert_eq!(render_text(r"a\\b", &[]), r"a\b");
-        // An escaped brace is text, so it can neither name a placeholder nor
-        // empty a group.
+        // An escaped brace is text, so it can neither name a placeholder nor empty a group.
         assert_eq!(render_text(r"[\{a\} {b}]", &[("b", "y")]), "{a} y");
     }
 

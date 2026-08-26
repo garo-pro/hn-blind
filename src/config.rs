@@ -1,13 +1,8 @@
 //! Where the user's edited templates live between runs.
 //!
-//! The file holds only what the user has actually changed. Anything untouched
-//! falls back to the compiled-in default, so improvements to the wording of a
-//! default announcement still reach people who once opened the settings dialog
-//! and changed something else.
+//! The file holds only what the user has actually changed. Anything untouched falls back to the compiled-in default, so improvements to the wording of a default announcement still reach people who once opened the settings dialog and changed something else.
 //!
-//! A missing, unreadable or corrupt file is never fatal: the application starts
-//! with its defaults and says why, because being unable to talk about a broken
-//! settings file is worse than the broken settings file.
+//! A missing, unreadable or corrupt file is never fatal: the application starts with its defaults and says why, because being unable to talk about a broken settings file is worse than the broken settings file.
 
 use std::path::PathBuf;
 
@@ -19,9 +14,7 @@ use crate::templates::{Template, Templates};
 const DIR: &str = "hn-blind";
 const FILE: &str = "templates.json";
 
-/// The platform's per-user directory for this application's files, or `None`
-/// if the platform gave us no home to put one in. Shared with `preferences.rs`,
-/// which keeps its own file alongside `templates.json` here.
+/// The platform's per-user directory for this application's files, or `None` if the platform gave us no home to put one in. Shared with `preferences.rs`, which keeps its own file alongside `templates.json` here.
 pub fn config_dir() -> Option<PathBuf> {
     let base = if cfg!(windows) {
         std::env::var_os("APPDATA").map(PathBuf::from)
@@ -40,16 +33,14 @@ pub fn config_dir() -> Option<PathBuf> {
     Some(base.join(DIR))
 }
 
-/// The settings file's path, or `None` if the platform gave us no home to put
-/// it in.
+/// The settings file's path, or `None` if the platform gave us no home to put it in.
 pub fn path() -> Option<PathBuf> {
     Some(config_dir()?.join(FILE))
 }
 
 /// Load the user's templates, falling back to defaults for anything missing.
 ///
-/// Returns the templates and, when something was wrong with the file, a
-/// sentence about it fit to be spoken as the first status message.
+/// Returns the templates and, when something was wrong with the file, a sentence about it fit to be spoken as the first status message.
 pub fn load() -> (Templates, Option<String>) {
     let mut templates = Templates::default();
 
@@ -87,8 +78,7 @@ pub fn load() -> (Templates, Option<String>) {
 
 /// Apply the file's entries, returning the ids that matched no template.
 ///
-/// Unknown ids are reported but kept out of the way rather than treated as an
-/// error: they are what a settings file written by a newer version looks like.
+/// Unknown ids are reported but kept out of the way rather than treated as an error: they are what a settings file written by a newer version looks like.
 fn apply(templates: &mut Templates, map: &Map<String, Value>) -> Vec<String> {
     let mut unknown = Vec::new();
     for (id, value) in map {

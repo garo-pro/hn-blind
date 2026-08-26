@@ -1,14 +1,6 @@
 //! The settings dialog's data: its tabs, its fields, and their grouping.
 //!
-//! The dialog itself is a real `wxDialog` (built in `main.rs`) with a
-//! `Notebook` of tabs, and each tab a `TreeCtrl` (one parent node per
-//! [`Group`], the group's fields as children) next to a single `TextCtrl` —
-//! or, for the one non-text field, a `CheckBox` — that edits whichever field
-//! is currently selected in the tree. Typing, the caret, and backspace/
-//! delete are the native `TextCtrl`'s job now; what stays here is knowing
-//! which fields exist, which tab and group they belong to, and which one is
-//! currently selected, so `app.rs` can turn that into wording and `main.rs`
-//! can turn it into tree nodes.
+//! The dialog itself is a real `wxDialog` (built in `main.rs`) with a `Notebook` of tabs, and each tab a `TreeCtrl` (one parent node per [`Group`], the group's fields as children) next to a single `TextCtrl` — or, for the one non-text field, a `CheckBox` — that edits whichever field is currently selected in the tree. Typing, the caret, and backspace/delete are the native `TextCtrl`'s job now; what stays here is knowing which fields exist, which tab and group they belong to, and which one is currently selected, so `app.rs` can turn that into wording and `main.rs` can turn it into tree nodes.
 
 use crate::templates::{Group, Template, Templates};
 
@@ -19,12 +11,9 @@ pub struct Tab {
 
 pub const TABS: &[Tab] = &[Tab { name: "Templates" }, Tab { name: "General" }];
 
-/// A control in the settings dialog: a template's editable text, or a
-/// checkbox for a preference that has no text at all.
+/// A control in the settings dialog: a template's editable text, or a checkbox for a preference that has no text at all.
 ///
-/// Only one checkbox exists today, so it is named directly rather than
-/// wrapped in a generic "toggle id" — that generality can be added the day a
-/// second one shows up.
+/// Only one checkbox exists today, so it is named directly rather than wrapped in a generic "toggle id" — that generality can be added the day a second one shows up.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Field {
     Template(Template),
@@ -50,8 +39,7 @@ impl Field {
 
 pub struct Settings {
     tab: usize,
-    /// Index into the active tab's `fields()`, or `None` while the dialog has
-    /// just opened and nothing has been picked in its field tree yet.
+    /// Index into the active tab's `fields()`, or `None` while the dialog has just opened and nothing has been picked in its field tree yet.
     selected: Option<usize>,
 }
 
@@ -92,15 +80,13 @@ impl Settings {
         self.fields().get(self.selected?).copied()
     }
 
-    /// Whether the selected control is a checkbox, which is toggled rather
-    /// than typed into.
+    /// Whether the selected control is a checkbox, which is toggled rather than typed into.
     pub fn is_toggle(&self) -> bool {
         matches!(self.focused_field(), Some(Field::EscapeExits))
     }
 
 
-    /// Select a field of the active tab, in response to the tree control's
-    /// own selection-changed event.
+    /// Select a field of the active tab, in response to the tree control's own selection-changed event.
     pub fn select_field(&mut self, index: usize) -> bool {
         if index >= self.fields().len() || self.selected == Some(index) {
             return false;
@@ -119,8 +105,7 @@ impl Settings {
         true
     }
 
-    /// Restore the selected field to its compiled-in default. A no-op on the
-    /// checkbox, which has no text to restore.
+    /// Restore the selected field to its compiled-in default. A no-op on the checkbox, which has no text to restore.
     pub fn reset_field(&mut self, templates: &mut Templates) -> Option<Template> {
         let Field::Template(template) = self.focused_field()? else {
             return None;
@@ -130,9 +115,7 @@ impl Settings {
     }
 }
 
-/// The controls that belong to a tab, independent of any dialog state — used
-/// both by `Settings::fields` and directly by `main.rs` when a tab other
-/// than the currently selected one needs to be populated.
+/// The controls that belong to a tab, independent of any dialog state — used both by `Settings::fields` and directly by `main.rs` when a tab other than the currently selected one needs to be populated.
 pub fn fields_of(tab: usize) -> Vec<Field> {
     match tab {
         0 => Template::ALL.iter().copied().map(Field::Template).collect(),
@@ -140,13 +123,9 @@ pub fn fields_of(tab: usize) -> Vec<Field> {
     }
 }
 
-/// The same fields, cut into their groups: each entry is a group and the
-/// stretch of `fields` that belongs to it.
+/// The same fields, cut into their groups: each entry is a group and the stretch of `fields` that belongs to it.
 ///
-/// Fields are declared in group order, so this is a scan rather than a sort.
-/// A screen reader announces entering and leaving a group, which is what
-/// makes seventy fields a list a person can move through rather than a wall
-/// — so the grouping is a real part of the interface, not decoration.
+/// Fields are declared in group order, so this is a scan rather than a sort. A screen reader announces entering and leaving a group, which is what makes seventy fields a list a person can move through rather than a wall — so the grouping is a real part of the interface, not decoration.
 pub fn groups(fields: &[Field]) -> Vec<(Group, std::ops::Range<usize>)> {
     let mut groups: Vec<(Group, std::ops::Range<usize>)> = Vec::new();
     for (index, field) in fields.iter().enumerate() {

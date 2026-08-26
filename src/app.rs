@@ -1,15 +1,10 @@
 //! Application state and the wording it produces.
 //!
-//! There is no accessibility tree to build any more: `main.rs` owns real
-//! wxWidgets controls (a `ListCtrl`, a `TreeCtrl`, a native `MenuBar`, a
-//! settings `Dialog`) and the platform's own MSAA/UIA support is what a
-//! screen reader reads. This module's job shrinks to exactly what it should
-//! always have been about: deciding *what* the application is showing and
-//! *what to say* about it.
+//! There is no accessibility tree to build any more: `main.rs` owns real wxWidgets controls (a `ListCtrl`, a `TreeCtrl`, a native `MenuBar`, a settings `Dialog`) and the platform's own MSAA/UIA support is what a screen reader reads. This module's job shrinks to exactly what it should always have been about: deciding *what* the application is showing and *what to say* about it.
 //!
-//! No wording is built by concatenation here either. Every string that
-//! reaches the user's ears comes from `templates.rs`, so this module's job is
-//! to decide *which* template applies and to hand it the values it needs.
+//! No wording is built by concatenation here either. Every string that reaches the user's ears comes from `templates.rs`, so this module's job is to decide *which* template applies and to hand it the values it needs.
+
+use std::collections::HashSet;
 
 use crate::hn::{CommentRow, Feed, Item, domain_of, relative_time};
 use crate::html;
@@ -26,12 +21,15 @@ pub enum View {
     Settings,
 }
 
-/// The keyboard map, also rendered as the help view so it is discoverable
-/// without sight or documentation.
+/// The keyboard map, also rendered as the help view so it is discoverable without sight or documentation.
 pub const HELP: &[(&str, &str)] = &[
     ("Up / Down, J / K", "move through the list"),
     ("Home / End", "first or last item"),
     ("Page Up / Page Down", "move ten items"),
+    (
+        "Left / Right",
+        "in the comments, hide or show the replies to a comment, or move to its parent or first reply",
+    ),
     ("Enter", "open the comments for the selected story"),
     ("O", "open the story link in your browser"),
     ("C", "open the Hacker News discussion page in your browser"),
@@ -64,6 +62,10 @@ pub struct App {
     pub story_cursor: usize,
     pub comments: Vec<CommentRow>,
     pub comment_cursor: usize,
+    /// Comment rows whose replies are hidden, as indices into `comments`.
+    ///
+    /// A tree whose subthreads cannot actually be skipped is only an indented list, so this is the thing that makes the comments view a tree rather than a flat one: Left and Right move rows in and out of it, and every other movement key steps over what it hides.
+    pub comment_collapsed: HashSet<usize>,
     /// The story whose thread is loaded, so the comments view can title itself.
     pub comment_story: Option<Item>,
     pub view: View,
@@ -86,6 +88,7 @@ impl App {
             story_cursor: 0,
             comments: Vec::new(),
             comment_cursor: 0,
+            comment_collapsed: HashSet::new(),
             comment_story: None,
             view: View::Stories,
             previous_view: View::Stories,
@@ -97,8 +100,7 @@ impl App {
         }
     }
 
-    /// Render a template. A thin wrapper, but it keeps call sites reading as
-    /// "say this" rather than as string plumbing.
+    /// Render a template. A thin wrapper, but it keeps call sites reading as "say this" rather than as string plumbing.
     pub fn text(&self, template: Template, args: &[(&str, &str)]) -> String {
         self.templates.render(template, args)
     }
@@ -107,15 +109,19 @@ impl App {
         self.templates.feed_title(self.feed)
     }
 
+    /// How many rows the user can currently move between.
+    ///
+    /// For a collapsed comment thread this is fewer than the number of comments loaded: hidden replies are not somewhere the cursor can go, so counting them would announce a position the user cannot reach. The unfiltered total is still what titles the view.
     pub fn row_count(&self) -> usize {
         match self.view {
             View::Stories => self.stories.len(),
-            View::Comments => self.comments.len(),
+            View::Comments => self.visible_comments().count(),
             View::Help => HELP.len(),
             View::Settings => 0,
         }
     }
 
+    /// The row the cursor is on, as an index into the view's own list. For comments this indexes the whole thread, collapsed replies included, because that is what `comments` and the tree's item handles are keyed by; [`App::position`] is the one to announce.
     pub fn cursor(&self) -> usize {
         match self.view {
             View::Stories => self.story_cursor,
@@ -124,24 +130,129 @@ impl App {
         }
     }
 
+    /// Where the cursor sits among the rows the user can reach — the "3" in "3 of 46". Only a collapsed comment thread makes this differ from [`App::cursor`].
+    pub fn position(&self) -> usize {
+        match self.view {
+            View::Comments => self
+                .visible_comments()
+                .position(|index| index == self.comment_cursor)
+                .unwrap_or(0),
+            _ => self.cursor(),
+        }
+    }
+
+    // ---- The comment tree --------------------------------------------------
+
+    /// The comment rows the tree is showing, in reading order.
+    ///
+    /// The thread arrives flattened with a depth on each row, so everything below a collapsed row until the depth comes back up is what that row hides. Nested collapses need no special case: the outermost one is already skipping their rows.
+    pub fn visible_comments(&self) -> impl Iterator<Item = usize> + '_ {
+        let mut hiding_below: Option<usize> = None;
+        self.comments.iter().enumerate().filter_map(move |(index, row)| {
+            if let Some(depth) = hiding_below {
+                if row.depth > depth {
+                    return None;
+                }
+                hiding_below = None;
+            }
+            if self.comment_collapsed.contains(&index) {
+                hiding_below = Some(row.depth);
+            }
+            Some(index)
+        })
+    }
+
+    /// Does this comment have replies?
+    ///
+    /// The thread is flat and in reading order, so it does exactly when the row after it sits one level deeper.
+    pub fn comment_has_replies(&self, index: usize) -> bool {
+        match (self.comments.get(index), self.comments.get(index + 1)) {
+            (Some(row), Some(next)) => next.depth > row.depth,
+            _ => false,
+        }
+    }
+
+    /// How many rows are nested under this one, at any depth.
+    pub fn comment_reply_count(&self, index: usize) -> usize {
+        let Some(row) = self.comments.get(index) else {
+            return 0;
+        };
+        self.comments[index + 1..]
+            .iter()
+            .take_while(|reply| reply.depth > row.depth)
+            .count()
+    }
+
+    pub fn comment_is_collapsed(&self, index: usize) -> bool {
+        self.comment_collapsed.contains(&index)
+    }
+
+    /// The comment this one replies to: the nearest row above it that sits one level shallower.
+    pub fn comment_parent(&self, index: usize) -> Option<usize> {
+        let depth = self.comments.get(index)?.depth;
+        if depth == 0 {
+            return None;
+        }
+        self.comments[..index].iter().rposition(|row| row.depth < depth)
+    }
+
+    /// Hide or show one comment's replies. Returns whether anything changed, so a caller can stay silent when the key did nothing.
+    pub fn set_comment_collapsed(&mut self, index: usize, collapsed: bool) -> bool {
+        if !self.comment_has_replies(index) {
+            return false;
+        }
+        let changed = if collapsed {
+            self.comment_collapsed.insert(index)
+        } else {
+            self.comment_collapsed.remove(&index)
+        };
+
+        // Closing a thread the cursor was inside would otherwise leave it on a row that is no longer there — which the tree reports as no selection at all, and which movement would then have to guess its way out of. The comment that was closed is where it belongs.
+        if changed && collapsed && !self.visible_comments().any(|row| row == self.comment_cursor) {
+            self.comment_cursor = index;
+        }
+        changed
+    }
+
+    /// Forget which threads were collapsed. Called when the thread itself changes, since the indices are only meaningful against one `comments`.
+    pub fn clear_comment_collapsed(&mut self) {
+        self.comment_collapsed.clear();
+    }
+
     fn set_cursor(&mut self, index: usize) {
         match self.view {
             View::Stories => self.story_cursor = index,
             View::Comments => self.comment_cursor = index,
-            // Neither has a cursor of its own: help is read as a whole, and the
-            // settings dialog moves focus through its own tree/text controls.
+            // Neither has a cursor of its own: help is read as a whole, and the settings dialog moves focus through its own tree/text controls.
             View::Help | View::Settings => {}
         }
     }
 
     /// Move the selection by `delta`, clamping at both ends.
     ///
-    /// Clamping rather than wrapping is deliberate: hitting a hard stop tells a
-    /// listener they are at the edge of the list without needing an extra
-    /// announcement.
+    /// Clamping rather than wrapping is deliberate: hitting a hard stop tells a listener they are at the edge of the list without needing an extra announcement.
+    ///
+    /// `delta` counts rows the user can see, so in a comment thread it steps over collapsed replies rather than through them. Landing on a hidden row would be worse than useless: the tree would scroll it back into view by reopening the thread the user just closed.
     pub fn move_cursor(&mut self, delta: isize) -> bool {
+        if self.view == View::Settings {
+            return false;
+        }
+        if self.view == View::Comments {
+            let rows: Vec<usize> = self.visible_comments().collect();
+            if rows.is_empty() {
+                return false;
+            }
+            let at = self.position() as isize;
+            let next = rows[(at + delta).clamp(0, rows.len() as isize - 1) as usize];
+            if next == self.comment_cursor {
+                return false;
+            }
+            self.comment_cursor = next;
+            return true;
+        }
+
         let count = self.row_count();
-        if count == 0 || self.view == View::Settings {
+        if count == 0 {
             return false;
         }
         let current = self.cursor() as isize;
@@ -153,13 +264,42 @@ impl App {
         true
     }
 
+    /// Move to one particular row, by its index into the view's own list — which is what a click on a list row or a tree item reports. A comment hidden inside a collapsed thread is not somewhere to move to.
     pub fn move_to(&mut self, index: usize) -> bool {
-        let count = self.row_count();
-        if count == 0 || index >= count || index == self.cursor() || self.view == View::Settings {
+        if self.view == View::Settings || index == self.cursor() {
+            return false;
+        }
+        if self.view == View::Comments {
+            if !self.visible_comments().any(|visible| visible == index) {
+                return false;
+            }
+            self.comment_cursor = index;
+            return true;
+        }
+        if index >= self.row_count() {
             return false;
         }
         self.set_cursor(index);
         true
+    }
+
+    /// Move to the first or last row the user can reach — Home and End. Stated this way rather than as an index because in a collapsed thread the last reachable row is not the last comment.
+    pub fn move_to_edge(&mut self, last: bool) -> bool {
+        let row = if self.view == View::Comments {
+            // Walked forwards either way: the iterator carries the state of which collapsed thread it is inside, so it only reads correctly from the front.
+            let mut rows = self.visible_comments();
+            if last { rows.last() } else { rows.next() }
+        } else {
+            match self.row_count() {
+                0 => None,
+                count if last => Some(count - 1),
+                _ => Some(0),
+            }
+        };
+        match row {
+            Some(row) => self.move_to(row),
+            None => false,
+        }
     }
 
     pub fn selected_story(&self) -> Option<&Item> {
@@ -179,8 +319,7 @@ impl App {
         }
     }
 
-    /// Title for the container, which is what a screen reader announces on
-    /// entering it.
+    /// Title for the container, which is what a screen reader announces on entering it.
     pub fn list_title(&self) -> String {
         match self.view {
             View::Stories => self.text(
@@ -260,8 +399,31 @@ impl App {
         }
     }
 
-    /// The full text of the selected row, spoken on demand. Unlike the label
-    /// this is not truncated and keeps paragraph breaks.
+    /// What a listener hears when a comment's replies are hidden or shown.
+    ///
+    /// Only spoken when nothing else is speaking: a screen reader reads the expanded/collapsed state of a tree item itself, and saying it twice is worse than not saying it at all.
+    pub fn collapse_text(&self, index: usize, collapsed: bool) -> String {
+        let template = if collapsed {
+            Template::CommentCollapsed
+        } else {
+            Template::CommentExpanded
+        };
+        let row = self.comments.get(index);
+        self.text(
+            template,
+            &[
+                ("replies", &self.comment_reply_count(index).to_string()),
+                ("level", &row.map(|row| row.depth + 1).unwrap_or(1).to_string()),
+                (
+                    "author",
+                    row.and_then(|row| row.item.by.as_deref()).unwrap_or_default(),
+                ),
+                ("label", &self.row_label(index)),
+            ],
+        )
+    }
+
+    /// The full text of the selected row, spoken on demand. Unlike the label this is not truncated and keeps paragraph breaks.
     pub fn selected_detail(&self) -> String {
         match self.view {
             View::Stories => match self.stories.get(self.story_cursor) {
@@ -304,8 +466,7 @@ impl App {
         }
     }
 
-    /// Everything a story template may ask for. Shared between the row label
-    /// and the read-in-full text so the two cannot drift apart.
+    /// Everything a story template may ask for. Shared between the row label and the read-in-full text so the two cannot drift apart.
     fn story_args(&self, index: usize, story: &Item) -> Args {
         let kind = match story.kind.as_deref() {
             Some("job") => self.text(Template::WordJob, &[]),
@@ -365,8 +526,7 @@ impl App {
         ]
     }
 
-    /// The comment count is three templates rather than one, because a language
-    /// that pluralizes differently cannot be served by appending an "s".
+    /// The comment count is three templates rather than one, because a language that pluralizes differently cannot be served by appending an "s".
     fn comment_count_text(&self, count: i64) -> String {
         let template = match count {
             0 => Template::CommentsNone,
@@ -397,8 +557,7 @@ impl App {
         )
     }
 
-    /// A field's current value as spoken text, and its placeholder list — empty
-    /// for the checkbox, which takes no placeholders.
+    /// A field's current value as spoken text, and its placeholder list — empty for the checkbox, which takes no placeholders.
     pub fn field_value_and_placeholders(&self, field: Field) -> (String, String) {
         match field {
             Field::Template(template) => {
@@ -468,9 +627,7 @@ impl App {
 
     // ---- Menu bar -----------------------------------------------------------
 
-    /// A command's label — a plain word for most, but the feed's own
-    /// user-editable name for `SelectFeed`, since a feed's name is a template
-    /// like every other spoken word, not something this module invents.
+    /// A command's label — a plain word for most, but the feed's own user-editable name for `SelectFeed`, since a feed's name is a template like every other spoken word, not something this module invents.
     pub fn command_label(&self, command: Command) -> String {
         match command {
             Command::SelectFeed(feed) => self.templates.feed_title(feed),
@@ -478,8 +635,7 @@ impl App {
         }
     }
 
-    /// Whether a checkbox or radio item should read as checked or selected.
-    /// Always `false` for a plain command, which has no such state.
+    /// Whether a checkbox or radio item should read as checked or selected. Always `false` for a plain command, which has no such state.
     pub fn command_marked(&self, command: Command, speech_active: bool) -> bool {
         match command {
             Command::SelectFeed(feed) => feed == self.feed,
@@ -488,11 +644,7 @@ impl App {
         }
     }
 
-    /// The spoken word for a checkbox or radio item's state, for a bare TTS
-    /// engine to say explicitly. Blank for a plain command and for an
-    /// unmarked radio item — a screen reader announces role and state from
-    /// the native menu item itself, so this exists only for when nothing
-    /// else is listening.
+    /// The spoken word for a checkbox or radio item's state, for a bare TTS engine to say explicitly. Blank for a plain command and for an unmarked radio item — a screen reader announces role and state from the native menu item itself, so this exists only for when nothing else is listening.
     pub fn command_state_text(&self, command: Command, speech_active: bool) -> String {
         let marked = self.command_marked(command, speech_active);
         match command.kind() {
@@ -599,6 +751,123 @@ mod tests {
         }];
         let args = app.comment_args(0, &app.comments[0]);
         assert!(args.iter().any(|(k, v)| *k == "level" && v == "3"));
+    }
+
+    /// A thread shaped like the real thing: flat, in reading order, with a depth per row. `depths` reads as the indentation it stands for.
+    fn app_with_comments(depths: &[usize]) -> App {
+        let mut app = App::new(Feed::Top, Templates::default(), Preferences::default());
+        app.view = View::Comments;
+        app.comments = depths
+            .iter()
+            .enumerate()
+            .map(|(i, depth)| CommentRow {
+                item: story(i as u64, &format!("c{i}")),
+                depth: *depth,
+            })
+            .collect();
+        app
+    }
+
+    #[test]
+    fn collapsing_a_comment_hides_every_reply_below_it() {
+        let mut app = app_with_comments(&[0, 1, 2, 1, 0]);
+        assert_eq!(app.row_count(), 5);
+
+        assert!(app.set_comment_collapsed(0, true));
+        assert_eq!(app.visible_comments().collect::<Vec<_>>(), vec![0, 4]);
+        assert_eq!(app.row_count(), 2, "the hidden replies are not rows to move to");
+    }
+
+    #[test]
+    fn a_comment_with_no_replies_cannot_be_collapsed() {
+        let mut app = app_with_comments(&[0, 1, 0]);
+        assert!(!app.comment_has_replies(1), "a leaf");
+        assert!(!app.set_comment_collapsed(1, true));
+        assert_eq!(app.row_count(), 3);
+    }
+
+    #[test]
+    fn moving_down_steps_over_a_collapsed_thread() {
+        let mut app = app_with_comments(&[0, 1, 2, 0]);
+        app.set_comment_collapsed(0, true);
+
+        assert!(app.move_cursor(1));
+        assert_eq!(app.cursor(), 3, "past the two hidden replies, not into them");
+        assert!(!app.move_cursor(1), "already at the last row that is showing");
+    }
+
+    #[test]
+    fn end_lands_on_the_last_row_showing_not_the_last_comment() {
+        let mut app = app_with_comments(&[0, 0, 1, 2]);
+        app.set_comment_collapsed(1, true);
+
+        assert!(app.move_to_edge(true));
+        assert_eq!(app.cursor(), 1);
+        assert!(app.move_to_edge(false));
+        assert_eq!(app.cursor(), 0);
+    }
+
+    #[test]
+    fn position_counts_what_is_showing_and_cursor_indexes_the_thread() {
+        let mut app = app_with_comments(&[0, 1, 1, 0]);
+        app.set_comment_collapsed(0, true);
+        app.move_cursor(1);
+
+        assert_eq!(app.cursor(), 3, "the fourth comment of the thread");
+        assert_eq!(app.position(), 1, "but the second row a listener can reach");
+    }
+
+    #[test]
+    fn a_hidden_comment_is_not_somewhere_the_cursor_can_be_put() {
+        let mut app = app_with_comments(&[0, 1, 0]);
+        app.set_comment_collapsed(0, true);
+        assert!(!app.move_to(1));
+        assert_eq!(app.cursor(), 0);
+    }
+
+    #[test]
+    fn a_reply_knows_the_comment_it_answers() {
+        let app = app_with_comments(&[0, 1, 2, 2, 1, 0]);
+        assert_eq!(app.comment_parent(0), None, "a top-level comment");
+        assert_eq!(app.comment_parent(2), Some(1));
+        assert_eq!(app.comment_parent(3), Some(1));
+        assert_eq!(app.comment_parent(4), Some(0));
+        assert_eq!(app.comment_reply_count(0), 4);
+        assert_eq!(app.comment_reply_count(1), 2);
+    }
+
+    #[test]
+    fn nesting_collapses_does_not_double_count_hidden_rows() {
+        let mut app = app_with_comments(&[0, 1, 2, 0]);
+        app.set_comment_collapsed(1, true);
+        app.set_comment_collapsed(0, true);
+        assert_eq!(app.visible_comments().collect::<Vec<_>>(), vec![0, 3]);
+
+        app.set_comment_collapsed(0, false);
+        assert_eq!(
+            app.visible_comments().collect::<Vec<_>>(),
+            vec![0, 1, 3],
+            "the inner thread is still closed"
+        );
+    }
+
+    #[test]
+    fn closing_a_thread_the_cursor_was_inside_brings_it_back_out() {
+        let mut app = app_with_comments(&[0, 1, 2, 0]);
+        app.move_to(2);
+        assert_eq!(app.cursor(), 2);
+
+        app.set_comment_collapsed(0, true);
+        assert_eq!(app.cursor(), 0, "onto the comment that was closed");
+        assert_eq!(app.position(), 0);
+    }
+
+    #[test]
+    fn a_new_thread_starts_with_every_reply_showing() {
+        let mut app = app_with_comments(&[0, 1]);
+        app.set_comment_collapsed(0, true);
+        app.clear_comment_collapsed();
+        assert_eq!(app.row_count(), 2);
     }
 
     #[test]

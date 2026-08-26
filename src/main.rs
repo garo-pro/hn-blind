@@ -1,15 +1,8 @@
 //! hn-blind — an accessible Hacker News client.
 //!
-//! The interface is a real native wxWidgets window: a `ListCtrl` for the
-//! story and help lists, a `TreeCtrl` for comment threads, a native
-//! `MenuBar`, and a `Dialog` for settings. wxWidgets' own MSAA/UIA support is
-//! what a screen reader reads; Prism supplies direct speech for status and
-//! on-demand full reading. See `app.rs` for how state becomes wording,
-//! `speech.rs` for how the two output channels stay out of each other's way,
-//! and `templates.rs` for where the wording itself comes from.
+//! The interface is a real native wxWidgets window: a `ListCtrl` for the story and help lists, a `TreeCtrl` for comment threads, a native `MenuBar`, and a `Dialog` for settings. wxWidgets' own MSAA/UIA support is what a screen reader reads; Prism supplies direct speech for status and on-demand full reading. See `app.rs` for how state becomes wording, `speech.rs` for how the two output channels stay out of each other's way, and `templates.rs` for where the wording itself comes from.
 
-// No console window when launched normally (e.g. double-click); `cargo run`
-// still shows one because it launches through a terminal already.
+// No console window when launched normally (e.g. double-click); `cargo run` still shows one because it launches through a terminal already.
 #![windows_subsystem = "windows"]
 
 use std::cell::{Cell, RefCell};
@@ -19,7 +12,9 @@ use std::thread;
 
 use wxdragon::event::{IdleEvent, IdleMode, TextEventData, TreeEventData, WindowEvents};
 use wxdragon::menus::menu::MenuBuilder;
-use wxdragon::keycode::{WXK_DOWN, WXK_END, WXK_ESCAPE, WXK_F1, WXK_F5, WXK_HOME, WXK_PAGEDOWN, WXK_PAGEUP, WXK_UP};
+use wxdragon::keycode::{
+    WXK_DOWN, WXK_END, WXK_ESCAPE, WXK_F1, WXK_F5, WXK_HOME, WXK_LEFT, WXK_PAGEDOWN, WXK_PAGEUP, WXK_RIGHT, WXK_UP,
+};
 use wxdragon::prelude::*;
 use wxdragon::widgets::checkbox::CheckBoxEventData;
 use wxdragon::widgets::item_data::HasItemData;
@@ -35,8 +30,7 @@ use hn_blind::settings::{Field, TABS, fields_of, groups};
 use hn_blind::speech::Speaker;
 use hn_blind::templates::{Template, validate};
 
-/// How many stories to pull per feed. HN's lists run to 500; a few screens'
-/// worth is what anyone actually reads.
+/// How many stories to pull per feed. HN's lists run to 500; a few screens' worth is what anyone actually reads.
 const STORY_LIMIT: usize = 50;
 /// Upper bound on comments fetched for one story, to keep big threads snappy.
 const COMMENT_LIMIT: usize = 400;
@@ -49,10 +43,7 @@ enum Request {
     Comments { generation: u64, story: Box<Item> },
 }
 
-/// Results handed back from the network thread. Plain, `Send` data only —
-/// the actual `Gui` state lives behind an `Rc`, which cannot cross threads,
-/// so a background thread only ever produces one of these and never touches
-/// the UI directly. See `apply_result` for where it lands.
+/// Results handed back from the network thread. Plain, `Send` data only — the actual `Gui` state lives behind an `Rc`, which cannot cross threads, so a background thread only ever produces one of these and never touches the UI directly. See `apply_result` for where it lands.
 enum WorkResult {
     Stories {
         generation: u64,
@@ -71,41 +62,26 @@ struct AppState {
     speaker: Speaker,
     generation: u64,
     requests: mpsc::Sender<Request>,
-    /// Parallel to `app.comments`: the tree node for each row, so a cursor
-    /// index can be turned into something `TreeCtrl` understands.
+    /// Parallel to `app.comments`: the tree node for each row, so a cursor index can be turned into something `TreeCtrl` understands.
     comment_items: Vec<TreeItemId>,
 }
 
-/// The application's shared handle. Widgets are cheap `Copy` types, so they
-/// live here directly; only `AppState` needs a `RefCell`. Cloning a `Gui` is
-/// cheap and is how every closure gets its own handle to the whole app.
+/// The application's shared handle. Widgets are cheap `Copy` types, so they live here directly; only `AppState` needs a `RefCell`. Cloning a `Gui` is cheap and is how every closure gets its own handle to the whole app.
 #[derive(Clone)]
 struct Gui {
     state: Rc<RefCell<AppState>>,
-    /// Set for the duration of a *programmatic* selection change on `list`
-    /// or `tree`, so the resulting native focus/selection event (which some
-    /// platforms fire synchronously) knows to ignore an echo of a move this
-    /// process already announced, rather than re-entering `state`'s
-    /// `RefCell` while it may still be borrowed.
+    /// Set for the duration of a *programmatic* selection change on `list` or `tree`, so the resulting native focus/selection event (which some platforms fire synchronously) knows to ignore an echo of a move this process already announced, rather than re-entering `state`'s `RefCell` while it may still be borrowed.
     suppress: Rc<Cell<bool>>,
     frame: Frame,
-    /// The frame's content area, holding `list` and `tree`. Kept so that
-    /// hiding one and showing the other can be followed by a re-layout,
-    /// which is what hands the whole area to whichever one is now visible.
+    /// The frame's content area, holding `list` and `tree`. Kept so that hiding one and showing the other can be followed by a re-layout, which is what hands the whole area to whichever one is now visible.
     panel: Panel,
     list: ListCtrl,
     tree: TreeCtrl,
-    /// Behind an `Rc` only because `MenuBar`, alone among the handles here,
-    /// is not `Clone`: the frame owns the real menu bar and this is a
-    /// borrowed view of it.
+    /// Behind an `Rc` only because `MenuBar`, alone among the handles here, is not `Clone`: the frame owns the real menu bar and this is a borrowed view of it.
     menu_bar: Rc<MenuBar>,
 }
 
-/// `ListCtrl` is the one control here that wxdragon does not give the
-/// `WindowEvents` category to, so it cannot be passed to `bind_content_keys`
-/// beside `TreeCtrl`. Every method of that trait is a default over
-/// `WxEvtHandler`, so a local wrapper earns them all back — cheaper than a
-/// second copy of the key handling for the sake of one widget.
+/// `ListCtrl` is the one control here that wxdragon does not give the `WindowEvents` category to, so it cannot be passed to `bind_content_keys` beside `TreeCtrl`. Every method of that trait is a default over `WxEvtHandler`, so a local wrapper earns them all back — cheaper than a second copy of the key handling for the sake of one widget.
 struct KeyTarget(ListCtrl);
 
 impl WxEvtHandler for KeyTarget {
@@ -140,11 +116,7 @@ fn run() {
     let panel = Panel::builder(&frame).build();
     let sizer = BoxSizer::builder(Orientation::Vertical).build();
 
-    // Report mode with a single unnamed column: one row is one announcement,
-    // and the row label carries everything. `SingleSel` because the cursor
-    // this application tracks is a single row — a range selection would be
-    // something it could not describe. `NoHeader` because a column with no
-    // name has no header worth landing on.
+    // Report mode with a single unnamed column: one row is one announcement, and the row label carries everything. `SingleSel` because the cursor this application tracks is a single row — a range selection would be something it could not describe. `NoHeader` because a column with no name has no header worth landing on.
     let list = ListCtrl::builder(&panel)
         .with_style(ListCtrlStyle::Report | ListCtrlStyle::SingleSel | ListCtrlStyle::NoHeader)
         .build();
@@ -202,8 +174,7 @@ fn run() {
     let feed = gui.state.borrow().app.feed;
     load_feed(&gui, feed);
 
-    // Said after the request is in flight, so it replaces "Loading" rather
-    // than being cut off by it. The feed announces itself when it arrives.
+    // Said after the request is in flight, so it replaces "Loading" rather than being cut off by it. The feed announces itself when it arrives.
     if let Some(note) = startup_note {
         set_status(&gui, note);
     }
@@ -211,15 +182,14 @@ fn run() {
 
 // ---- Wording / title -------------------------------------------------------
 
-/// Mirror position into the window title, the one thing a sighted person
-/// looking over a shoulder can read.
+/// Mirror position into the window title, the one thing a sighted person looking over a shoulder can read.
 fn sync_title(gui: &Gui) {
     let s = gui.state.borrow();
     let count = s.app.row_count();
     let (position, total) = if count == 0 {
         (String::new(), String::new())
     } else {
-        ((s.app.cursor() + 1).to_string(), count.to_string())
+        ((s.app.position() + 1).to_string(), count.to_string())
     };
     let title = s.app.text(
         Template::WindowTitle,
@@ -235,10 +205,7 @@ fn sync_title(gui: &Gui) {
 
 /// Set the status line and speak it.
 ///
-/// Status is Prism's job. A screen reader with native support for the
-/// standard Windows status bar control announces its text changes on its
-/// own when Prism itself is not speaking; either way exactly one channel
-/// says it.
+/// Status is Prism's job. A screen reader with native support for the standard Windows status bar control announces its text changes on its own when Prism itself is not speaking; either way exactly one channel says it.
 fn set_status(gui: &Gui, text: impl Into<String>) {
     let text = text.into();
     gui.state.borrow_mut().app.status = text.clone();
@@ -248,8 +215,7 @@ fn set_status(gui: &Gui, text: impl Into<String>) {
 
 /// Announce a change of view: the new context, then the row now focused.
 ///
-/// Both go out as a single utterance because `announce` interrupts, so two
-/// calls would leave the user hearing only the second.
+/// Both go out as a single utterance because `announce` interrupts, so two calls would leave the user hearing only the second.
 fn enter_view(gui: &Gui, status: impl Into<String>) {
     gui.state.borrow_mut().app.status = status.into();
     populate_view(gui);
@@ -267,7 +233,7 @@ fn enter_view(gui: &Gui, status: impl Into<String>) {
         &[
             ("status", &s.app.status),
             ("label", &label),
-            ("position", &(s.app.cursor() + 1).to_string()),
+            ("position", &(s.app.position() + 1).to_string()),
             ("count", &s.app.row_count().to_string()),
         ],
     );
@@ -275,15 +241,9 @@ fn enter_view(gui: &Gui, status: impl Into<String>) {
     gui.state.borrow_mut().speaker.announce(&text);
 }
 
-/// Handle a cursor move: push the new position into the native control, then
-/// (with no screen reader doing it for us) speak the row that landed under
-/// it.
+/// Handle a cursor move: push the new position into the native control, then (with no screen reader doing it for us) speak the row that landed under it.
 fn moved(gui: &Gui) {
-    // `suppress` is what makes it safe to hold this borrow across a call
-    // into wxWidgets: the selection events it fires synchronously turn
-    // around at the top of their handlers without touching `state`. Holding
-    // it rather than copying is what keeps a four-hundred-comment thread
-    // from cloning every one of its tree item handles on each keypress.
+    // `suppress` is what makes it safe to hold this borrow across a call into wxWidgets: the selection events it fires synchronously turn around at the top of their handlers without touching `state`. Holding it rather than copying is what keeps a four-hundred-comment thread from cloning every one of its tree item handles on each keypress.
     gui.suppress.set(true);
     {
         let s = gui.state.borrow();
@@ -306,7 +266,7 @@ fn moved(gui: &Gui) {
         Template::AnnounceRow,
         &[
             ("label", &label),
-            ("position", &(s.app.cursor() + 1).to_string()),
+            ("position", &(s.app.position() + 1).to_string()),
             ("count", &s.app.row_count().to_string()),
         ],
     );
@@ -314,9 +274,7 @@ fn moved(gui: &Gui) {
     gui.state.borrow_mut().speaker.announce(&text);
 }
 
-/// Rebuild the list or tree from current state and select the current
-/// cursor, without speaking anything — callers that show a new view speak
-/// through `enter_view` instead.
+/// Rebuild the list or tree from current state and select the current cursor, without speaking anything — callers that show a new view speak through `enter_view` instead.
 fn populate_view(gui: &Gui) {
     let view = gui.state.borrow().app.view;
     gui.suppress.set(true);
@@ -345,9 +303,7 @@ fn populate_view(gui: &Gui) {
                 if !s.app.comments.is_empty()
                     && let Some(root) = gui.tree.add_root("Comments", None, None)
                 {
-                    // The thread arrives flattened into reading order with a
-                    // depth on each row; `stack` turns that back into nesting,
-                    // which is what makes the tree announce reply level.
+                    // The thread arrives flattened into reading order with a depth on each row; `stack` turns that back into nesting, which is what makes the tree announce reply level.
                     let mut stack: Vec<(i64, TreeItemId)> = Vec::new();
                     for (i, row) in s.app.comments.iter().enumerate() {
                         let depth = row.depth as i64;
@@ -361,7 +317,13 @@ fn populate_view(gui: &Gui) {
                             stack.push((depth, item));
                         }
                     }
+                    // Expand first so every reply has been laid out, then close the threads the user had closed: `collapse` on an item that was never expanded is a no-op, so the order matters when a view is rebuilt.
                     gui.tree.expand_all();
+                    for (i, item) in items.iter().enumerate() {
+                        if s.app.comment_is_collapsed(i) {
+                            gui.tree.collapse(item);
+                        }
+                    }
                 }
             }
 
@@ -376,8 +338,7 @@ fn populate_view(gui: &Gui) {
         }
     }
 
-    // A hidden control is dropped from the sizer's reckoning, so this is
-    // what gives the one that was just shown the whole content area.
+    // A hidden control is dropped from the sizer's reckoning, so this is what gives the one that was just shown the whole content area.
     gui.panel.layout();
     gui.suppress.set(false);
 }
@@ -394,8 +355,10 @@ fn select_list_row(list: &ListCtrl, index: usize, count: usize) {
     }
 }
 
+/// Point the tree at one row. `index` is an index into the whole thread, so it is only ever a row that is actually showing — `ensure_visible` would otherwise reopen the very thread the user had just collapsed.
+///
+/// No `unselect_all` first: this is a single-selection tree, so selecting is already a replacement, and the moment with nothing selected that clearing leaves behind is a moment a screen reader has to say something about.
 fn select_tree_row(tree: &TreeCtrl, items: &[TreeItemId], index: usize) {
-    tree.unselect_all();
     if let Some(item) = items.get(index) {
         tree.select_item(item);
         tree.ensure_visible(item);
@@ -414,6 +377,13 @@ fn move_by(gui: &Gui, delta: isize) {
 
 fn move_to(gui: &Gui, index: usize) {
     let did_move = gui.state.borrow_mut().app.move_to(index);
+    if did_move {
+        moved(gui);
+    }
+}
+
+fn move_to_edge(gui: &Gui, last: bool) {
+    let did_move = gui.state.borrow_mut().app.move_to_edge(last);
     if did_move {
         moved(gui);
     }
@@ -487,6 +457,7 @@ fn go_back(gui: &Gui) {
                 s.app.view = View::Stories;
                 s.app.comments.clear();
                 s.app.comment_cursor = 0;
+                s.app.clear_comment_collapsed();
                 s.app.comment_story = None;
                 s.app.list_title()
             };
@@ -541,9 +512,7 @@ fn read_selection(gui: &Gui) {
 
 /// Say something the user has explicitly asked to hear.
 ///
-/// Unlike a status message this is not transient chatter, so it goes out
-/// whichever channel is listening: Prism when it has a backend, and the
-/// status line otherwise, where the screen reader picks it up instead.
+/// Unlike a status message this is not transient chatter, so it goes out whichever channel is listening: Prism when it has a backend, and the status line otherwise, where the screen reader picks it up instead.
 fn say_on_demand(gui: &Gui, text: String) {
     let enabled = gui.state.borrow().speaker.is_enabled();
     if enabled {
@@ -553,8 +522,87 @@ fn say_on_demand(gui: &Gui, text: String) {
     }
 }
 
-/// The default action for the current row: comments for a story, and the
-/// permalink for a comment.
+/// Left in the comment tree: close the thread under this comment, or, when there is nothing to close, step out to the comment it replies to.
+///
+/// This pairing is what every tree control on every platform does, and it is the whole point of showing comments as a tree: it is how a listener says "I am done with this subthread" and gets past it in one keystroke instead of forty.
+fn collapse_current(gui: &Gui) -> bool {
+    // Read everything under one borrow and let it go before acting: both branches below re-enter `state` mutably.
+    let (index, open, parent) = {
+        let s = gui.state.borrow();
+        if s.app.view != View::Comments {
+            return false;
+        }
+        let index = s.app.cursor();
+        let open = s.app.comment_has_replies(index) && !s.app.comment_is_collapsed(index);
+        (index, open, s.app.comment_parent(index))
+    };
+
+    if open {
+        set_collapsed(gui, index, true);
+    } else if let Some(parent) = parent {
+        move_to(gui, parent);
+    }
+    true
+}
+
+/// Right in the comment tree: open the thread under this comment, or, when it is already open, step into the first reply.
+fn expand_current(gui: &Gui) -> bool {
+    let (index, closed) = {
+        let s = gui.state.borrow();
+        if s.app.view != View::Comments {
+            return false;
+        }
+        let index = s.app.cursor();
+        if !s.app.comment_has_replies(index) {
+            return true;
+        }
+        (index, s.app.comment_is_collapsed(index))
+    };
+
+    if closed {
+        set_collapsed(gui, index, false);
+    } else {
+        // The thread is flat and in reading order, so the first reply is simply the next row.
+        move_to(gui, index + 1);
+    }
+    true
+}
+
+/// Hide or show one comment's replies, in the application's state and in the tree, and say so.
+fn set_collapsed(gui: &Gui, index: usize, collapsed: bool) {
+    if !gui.state.borrow_mut().app.set_comment_collapsed(index, collapsed) {
+        return;
+    }
+
+    // The tree is the one doing the hiding; the state above only records it so that movement and the rebuilt view agree with what is on screen.
+    gui.suppress.set(true);
+    {
+        let s = gui.state.borrow();
+        if let Some(item) = s.comment_items.get(index) {
+            if collapsed {
+                gui.tree.collapse(item);
+            } else {
+                gui.tree.expand(item);
+            }
+        }
+        // Closing a thread can have moved the cursor out of it.
+        select_tree_row(&gui.tree, &s.comment_items, s.app.cursor());
+    }
+    gui.suppress.set(false);
+
+    sync_title(gui);
+
+    // A screen reader announces a tree item's own expanded/collapsed state, so this is only for the listener who has no screen reader to do it.
+    let s = gui.state.borrow();
+    if !s.speaker.announces_focus() {
+        return;
+    }
+    let text = s.app.collapse_text(index, collapsed);
+    drop(s);
+    gui.state.borrow_mut().speaker.announce(&text);
+}
+
+/// The default action for the current row: comments for a story, and the permalink for a comment.
 fn activate(gui: &Gui) {
     let view = gui.state.borrow().app.view;
     match view {
@@ -585,8 +633,7 @@ fn toggle_speech(gui: &Gui) {
     sync_menu_checks(gui);
 }
 
-/// Perform a command, however it was reached — the menu bar and the matching
-/// key both end up here, so the two can never drift apart.
+/// Perform a command, however it was reached — the menu bar and the matching key both end up here, so the two can never drift apart.
 fn run_command(gui: &Gui, command: Command) {
     match command {
         Command::SelectFeed(feed) => load_feed(gui, feed),
@@ -616,8 +663,7 @@ fn run_command(gui: &Gui, command: Command) {
 
 // ---- Keyboard ---------------------------------------------------------------
 
-/// Named (non-printable) keys, shared by the story/help list and the comment
-/// tree. Returns whether the key was consumed.
+/// Named (non-printable) keys, shared by the story/help list and the comment tree. Returns whether the key was consumed.
 fn handle_named_key(gui: &Gui, code: i32) -> bool {
     if code == WXK_UP {
         move_by(gui, -1);
@@ -628,10 +674,14 @@ fn handle_named_key(gui: &Gui, code: i32) -> bool {
     } else if code == WXK_PAGEDOWN {
         move_by(gui, PAGE);
     } else if code == WXK_HOME {
-        move_to(gui, 0);
+        move_to_edge(gui, false);
     } else if code == WXK_END {
-        let last = gui.state.borrow().app.row_count().saturating_sub(1);
-        move_to(gui, last);
+        move_to_edge(gui, true);
+    } else if code == WXK_LEFT {
+        // Left and Right are the tree's own keys, and only the comment view has a tree. Everywhere else they stay the platform's to handle.
+        return collapse_current(gui);
+    } else if code == WXK_RIGHT {
+        return expand_current(gui);
     } else if code == WXK_F1 {
         toggle_help(gui);
     } else {
@@ -640,8 +690,7 @@ fn handle_named_key(gui: &Gui, code: i32) -> bool {
     true
 }
 
-/// Printable characters, shared by the story/help list and the comment tree.
-/// Returns whether the character was consumed.
+/// Printable characters, shared by the story/help list and the comment tree. Returns whether the character was consumed.
 fn handle_char(gui: &Gui, ch: char) -> bool {
     if let Some(digit) = ch.to_digit(10) {
         let index = (digit as usize).wrapping_sub(1);
@@ -655,9 +704,7 @@ fn handle_char(gui: &Gui, ch: char) -> bool {
         '\u{8}' => go_back(gui), // Backspace
         '\r' | '\n' => activate(gui),
         '\u{1b}' => {
-            // Escape: at the story list either quits or is just Backspace's
-            // synonym for "go back", depending on the preference; elsewhere
-            // it always means "go back".
+            // Escape: at the story list either quits or is just Backspace's synonym for "go back", depending on the preference; elsewhere it always means "go back".
             let (view, escape_exits) = {
                 let s = gui.state.borrow();
                 (s.app.view, s.app.preferences.escape_exits)
@@ -695,18 +742,12 @@ fn handle_char(gui: &Gui, ch: char) -> bool {
     true
 }
 
-/// Bind the global single-letter/movement commands to a content control (the
-/// story/help list or the comment tree). Both get identical bindings so the
-/// commands work no matter which one currently holds focus.
+/// Bind the global single-letter/movement commands to a content control (the story/help list or the comment tree). Both get identical bindings so the commands work no matter which one currently holds focus.
 fn bind_content_keys<W: WindowEvents>(widget: &W, gui: &Gui) {
     let g = gui.clone();
     widget.on_key_down(move |e: WindowEventData| {
         let handled = matches!(&e, WindowEventData::Keyboard(kb) if kb.get_key_code().is_some_and(|code| handle_named_key(&g, code)));
-        // A bound handler that does not skip swallows the key. Anything we
-        // did not act on has to go on to the control and then to wxWidgets
-        // itself, or Tab would not move focus, Alt would not open the menu
-        // bar, and — since a character event only follows a key-down that
-        // was skipped — `on_char` below would never run at all.
+        // A bound handler that does not skip swallows the key. Anything we did not act on has to go on to the control and then to wxWidgets itself, or Tab would not move focus, Alt would not open the menu bar, and — since a character event only follows a key-down that was skipped — `on_char` below would never run at all.
         e.skip(!handled);
     });
 
@@ -718,9 +759,7 @@ fn bind_content_keys<W: WindowEvents>(widget: &W, gui: &Gui) {
     });
 }
 
-/// Mouse-driven (or otherwise externally driven) focus/selection changes on
-/// the content controls: clicking a row, or a screen reader's own virtual
-/// cursor landing on one.
+/// Mouse-driven (or otherwise externally driven) focus/selection changes on the content controls: clicking a row, or a screen reader's own virtual cursor landing on one.
 fn bind_content_selection(gui: &Gui) {
     let g = gui.clone();
     gui.list.on_item_focused(move |e: ListCtrlEventData| {
@@ -740,24 +779,42 @@ fn bind_content_selection(gui: &Gui) {
         if g.suppress.get() {
             return;
         }
-        let Some(item) = e.get_item() else { return };
-        let index = g
-            .tree
-            .get_custom_data(&item)
-            .and_then(|data| data.downcast_ref::<usize>().copied());
-        if let Some(index) = index {
-            move_to(&g, index);
-        }
+        let Some(index) = e.get_item().and_then(|item| tree_row(&g, &item)) else {
+            return;
+        };
+        move_to(&g, index);
     });
     let g = gui.clone();
     gui.tree.on_item_activated(move |_| activate(&g));
+
+    // Clicking the expander is the other way to open and close a thread, and the cursor has to step over the same rows afterwards however it was done. `suppress` is what keeps this from echoing back the collapses this application asked the tree for itself.
+    let g = gui.clone();
+    gui.tree.on_item_collapsed(move |e: TreeEventData| collapsed_in_tree(&g, e, true));
+    let g = gui.clone();
+    gui.tree.on_item_expanded(move |e: TreeEventData| collapsed_in_tree(&g, e, false));
 }
 
-/// The row-relevant context menu: right-click, or the keyboard's Menu key /
-/// Shift+F10, either of which wxWidgets reports as `wxEVT_CONTEXT_MENU` on
-/// whichever of `list` or `tree` is focused. That event bubbles up to `panel`
-/// (their common wx parent) when neither handles it, so one binding here
-/// covers both controls without needing a copy per widget.
+/// Record a thread the tree itself opened or closed, so movement agrees with what is on screen.
+fn collapsed_in_tree(gui: &Gui, e: TreeEventData, collapsed: bool) {
+    if gui.suppress.get() {
+        return;
+    }
+    let Some(index) = e.get_item().and_then(|item| tree_row(gui, &item)) else {
+        return;
+    };
+    if gui.state.borrow_mut().app.set_comment_collapsed(index, collapsed) {
+        sync_title(gui);
+    }
+}
+
+/// The thread row a tree item stands for. Every item carries its index into `app.comments` as its data, which is the only thing that survives the tree being rebuilt.
+fn tree_row(gui: &Gui, item: &TreeItemId) -> Option<usize> {
+    gui.tree
+        .get_custom_data(item)
+        .and_then(|data| data.downcast_ref::<usize>().copied())
+}
+
+/// The row-relevant context menu: right-click, or the keyboard's Menu key / Shift+F10, either of which wxWidgets reports as `wxEVT_CONTEXT_MENU` on whichever of `list` or `tree` is focused. That event bubbles up to `panel` (their common wx parent) when neither handles it, so one binding here covers both controls without needing a copy per widget.
 fn bind_context_menu(gui: &Gui) {
     let g = gui.clone();
     gui.panel.on_context_menu(move |e: MenuEventData| {
@@ -773,9 +830,7 @@ fn bind_context_menu(gui: &Gui) {
 
 // ---- The menu bar -----------------------------------------------------------
 
-/// Build the menu bar. Takes the application because one command — choosing
-/// a feed — is labelled with a user-editable template rather than a fixed
-/// word, and wxWidgets has no use for a menu item with no text on it.
+/// Build the menu bar. Takes the application because one command — choosing a feed — is labelled with a user-editable template rather than a fixed word, and wxWidgets has no use for a menu item with no text on it.
 fn build_menu_bar(app: &App) -> MenuBar {
     let mut builder = MenuBar::builder();
     for bar in menu::BARS {
@@ -785,9 +840,7 @@ fn build_menu_bar(app: &App) -> MenuBar {
     builder.build()
 }
 
-/// Append a menu's entries to a builder, wired to the same `Command` ids the
-/// menu bar and the keyboard use — shared so a popup menu built from the same
-/// items can never drift from the menu bar's own.
+/// Append a menu's entries to a builder, wired to the same `Command` ids the menu bar and the keyboard use — shared so a popup menu built from the same items can never drift from the menu bar's own.
 fn append_items(mut builder: MenuBuilder, app: &App, items: &[MenuEntry]) -> MenuBuilder {
     for item in items {
         builder = match item {
@@ -805,10 +858,7 @@ fn append_items(mut builder: MenuBuilder, app: &App, items: &[MenuEntry]) -> Men
     builder
 }
 
-/// The right-click / Menu-key context menu for the story and comment lists:
-/// the same "Story" commands the menu bar offers, reachable without leaving
-/// the row under the cursor. Built fresh each time so a user-edited feed
-/// template or other label change can never leave it stale.
+/// The right-click / Menu-key context menu for the story and comment lists: the same "Story" commands the menu bar offers, reachable without leaving the row under the cursor. Built fresh each time so a user-edited feed template or other label change can never leave it stale.
 fn build_context_menu(app: &App) -> Menu {
     let items = menu::BARS
         .iter()
@@ -818,9 +868,7 @@ fn build_context_menu(app: &App) -> Menu {
     append_items(Menu::builder(), app, items).build()
 }
 
-/// `SelectFeed`'s label is the feed's own user-editable name, so unlike
-/// every other command it can go stale when a template changes; refreshed
-/// here at startup and whenever the settings dialog closes.
+/// `SelectFeed`'s label is the feed's own user-editable name, so unlike every other command it can go stale when a template changes; refreshed here at startup and whenever the settings dialog closes.
 fn sync_feed_labels(gui: &Gui) {
     let s = gui.state.borrow();
     for feed in Feed::ALL {
@@ -831,8 +879,7 @@ fn sync_feed_labels(gui: &Gui) {
     }
 }
 
-/// Refresh which feed reads as current and whether speech reads as on,
-/// after either changes.
+/// Refresh which feed reads as current and whether speech reads as on, after either changes.
 fn sync_menu_checks(gui: &Gui) {
     let s = gui.state.borrow();
     for bar in menu::BARS {
@@ -900,8 +947,7 @@ fn open_settings(gui: &Gui) {
         if s.app.view == View::Settings {
             return;
         }
-        // Entering from help, keep the view help itself would return to
-        // rather than building a loop between the two.
+        // Entering from help, keep the view help itself would return to rather than building a loop between the two.
         if s.app.view != View::Help {
             s.app.previous_view = s.app.view;
         }
@@ -934,8 +980,7 @@ fn open_settings(gui: &Gui) {
     let notebook = Notebook::builder(&dialog).build();
     for (tab_index, tab) in TABS.iter().enumerate() {
         let page = build_settings_page(&notebook, tab_index, gui);
-        // Even the name on a tab is a template, like every other word this
-        // application shows or says.
+        // Even the name on a tab is a template, like every other word this application shows or says.
         let label = gui.state.borrow().app.text(
             Template::SettingsTabLabel,
             &[
@@ -972,8 +1017,7 @@ fn open_settings(gui: &Gui) {
     let close_button = Button::builder(&dialog).with_label("Close").build();
     close_button.on_click(move |_| dialog.end_modal(ID_OK));
 
-    // wxWidgets closes a dialog on Escape by itself in most cases; saying so
-    // here makes it true in all of them, and costs one comparison.
+    // wxWidgets closes a dialog on Escape by itself in most cases; saying so here makes it true in all of them, and costs one comparison.
     dialog.on_key_down(move |e: WindowEventData| {
         let escape = matches!(&e, WindowEventData::Keyboard(kb) if kb.get_key_code() == Some(WXK_ESCAPE));
         if escape {
@@ -993,9 +1037,7 @@ fn open_settings(gui: &Gui) {
     close_settings(gui);
 }
 
-/// One tab's worth of the settings dialog: a grouped tree of its fields next
-/// to a single editor pane (a `TextCtrl`, or for the one non-text field a
-/// `CheckBox`) that shows whichever field is currently selected in the tree.
+/// One tab's worth of the settings dialog: a grouped tree of its fields next to a single editor pane (a `TextCtrl`, or for the one non-text field a `CheckBox`) that shows whichever field is currently selected in the tree.
 fn build_settings_page(parent: &Notebook, tab_index: usize, gui: &Gui) -> Panel {
     let panel = Panel::builder(parent).build();
     let main_sizer = BoxSizer::builder(Orientation::Horizontal).build();
@@ -1115,12 +1157,9 @@ fn build_settings_page(parent: &Notebook, tab_index: usize, gui: &Gui) -> Panel 
     panel
 }
 
-/// The two keys the settings dialog adds to what wxWidgets already does for
-/// it: F1 for the key list, F5 to restore a field's default.
+/// The two keys the settings dialog adds to what wxWidgets already does for it: F1 for the key list, F5 to restore a field's default.
 ///
-/// Bound to every control the dialog can put focus on, because picking a
-/// field in the tree moves focus into the editor — binding the tree alone
-/// would put F5 out of reach exactly when a user wants it.
+/// Bound to every control the dialog can put focus on, because picking a field in the tree moves focus into the editor — binding the tree alone would put F5 out of reach exactly when a user wants it.
 fn bind_settings_keys<W: WindowEvents>(widget: &W, gui: &Gui, text_ctrl: TextCtrl) {
     let g = gui.clone();
     widget.on_key_down(move |e: WindowEventData| {
@@ -1128,8 +1167,7 @@ fn bind_settings_keys<W: WindowEvents>(widget: &W, gui: &Gui, text_ctrl: TextCtr
         match code {
             Some(WXK_F1) => speak_settings_keys(&g),
             Some(WXK_F5) => reset_focused_field(&g, &text_ctrl),
-            // Everything else is the dialog's own: the tree moves between
-            // fields, the editor edits, Tab moves between the two.
+            // Everything else is the dialog's own: the tree moves between fields, the editor edits, Tab moves between the two.
             _ => {
                 e.skip(true);
                 return;
@@ -1153,8 +1191,7 @@ fn speak_settings_keys(gui: &Gui) {
     say_on_demand(gui, text);
 }
 
-/// Put the selected field back to its compiled-in default, in the model and
-/// in the editor showing it. A no-op on the checkbox, which has no text.
+/// Put the selected field back to its compiled-in default, in the model and in the editor showing it. A no-op on the checkbox, which has no text.
 fn reset_focused_field(gui: &Gui, text_ctrl: &TextCtrl) {
     let reset = {
         let mut state = gui.state.borrow_mut();
@@ -1179,10 +1216,7 @@ fn reset_focused_field(gui: &Gui, text_ctrl: &TextCtrl) {
 
 /// Leave the dialog, writing the edits to disk.
 ///
-/// A template that will not render as its author intended is reported in
-/// preference to the save itself: the file being written matters less than
-/// the user knowing that one of their announcements is broken. It is saved
-/// either way — their text is theirs, mistake or not.
+/// A template that will not render as its author intended is reported in preference to the save itself: the file being written matters less than the user knowing that one of their announcements is broken. It is saved either way — their text is theirs, mistake or not.
 fn close_settings(gui: &Gui) {
     let (saved, problem, previous) = {
         let s = gui.state.borrow();
@@ -1222,10 +1256,7 @@ fn close_settings(gui: &Gui) {
 
 // ---- Background work --------------------------------------------------------
 
-/// Run network work off the GUI thread, reporting back through a channel
-/// polled from an idle handler (see `bind_worker_idle`) — the GUI's own
-/// state lives behind an `Rc`, which cannot cross threads, so the worker
-/// only ever produces plain `Send` data.
+/// Run network work off the GUI thread, reporting back through a channel polled from an idle handler (see `bind_worker_idle`) — the GUI's own state lives behind an `Rc`, which cannot cross threads, so the worker only ever produces plain `Send` data.
 fn spawn_worker() -> (mpsc::Sender<Request>, mpsc::Receiver<WorkResult>) {
     let (request_tx, request_rx) = mpsc::channel::<Request>();
     let (result_tx, result_rx) = mpsc::channel::<WorkResult>();
@@ -1240,8 +1271,7 @@ fn spawn_worker() -> (mpsc::Sender<Request>, mpsc::Receiver<WorkResult>) {
                 }
                 Request::Comments { generation, story } => {
                     let rows = client.comment_thread(&story.kids, COMMENT_LIMIT);
-                    // An empty result for a story that advertises comments means
-                    // the fetch failed, not that the thread is empty.
+                    // An empty result for a story that advertises comments means the fetch failed, not that the thread is empty.
                     let result = if rows.is_empty() && !story.kids.is_empty() {
                         Err("no comments could be fetched".to_string())
                     } else {
@@ -1253,10 +1283,7 @@ fn spawn_worker() -> (mpsc::Sender<Request>, mpsc::Receiver<WorkResult>) {
             if sent.is_err() {
                 break; // The GUI is gone; so are we.
             }
-            // The GUI thread is asleep in the event loop and nothing it can
-            // see has changed, so poke it: this is the one wx call that is
-            // safe from another thread, and it is what makes the idle
-            // handler in `bind_worker_idle` run and pick the result up.
+            // The GUI thread is asleep in the event loop and nothing it can see has changed, so poke it: this is the one wx call that is safe from another thread, and it is what makes the idle handler in `bind_worker_idle` run and pick the result up.
             wxdragon::wake_up_idle();
         }
     });
@@ -1329,6 +1356,8 @@ fn apply_result(gui: &Gui, result: WorkResult) {
                         let mut s = gui.state.borrow_mut();
                         s.app.comments = comments;
                         s.app.comment_cursor = 0;
+                        // Collapsed rows are indices into the thread that was showing, so they mean nothing against a new one.
+                        s.app.clear_comment_collapsed();
                         s.app.view = View::Comments;
                     }
                     let status = gui

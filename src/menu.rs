@@ -1,20 +1,10 @@
-//! The menu bar's declarative structure: a second, discoverable way to reach
-//! every command, for a user who does not already know the letter keys by
-//! heart.
+//! The menu bar's declarative structure: a second, discoverable way to reach every command, for a user who does not already know the letter keys by heart.
 //!
-//! This is now a real `wxMenuBar` built in `main.rs` — wxWidgets owns the
-//! open/close state, the highlighting, and Left/Right/Up/Down/Enter/Escape
-//! navigation, and exposes all of it to a screen reader on its own. What
-//! stays here is the one thing that must not drift out of sync with the
-//! keyboard: which command lives under which entry, and the stable numeric
-//! id `main.rs` uses to build the native menu and to dispatch its events
-//! back to a [`Command`].
+//! This is now a real `wxMenuBar` built in `main.rs` — wxWidgets owns the open/close state, the highlighting, and Left/Right/Up/Down/Enter/Escape navigation, and exposes all of it to a screen reader on its own. What stays here is the one thing that must not drift out of sync with the keyboard: which command lives under which entry, and the stable numeric id `main.rs` uses to build the native menu and to dispatch its events back to a [`Command`].
 
 use crate::hn::Feed;
 
-/// Something the menu can do. Each names the exact effect an existing key
-/// already has, so choosing an item and pressing its key are the same action
-/// reaching the application through two different doors.
+/// Something the menu can do. Each names the exact effect an existing key already has, so choosing an item and pressing its key are the same action reaching the application through two different doors.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Command {
     SelectFeed(Feed),
@@ -30,11 +20,7 @@ pub enum Command {
     Quit,
 }
 
-/// How a command's menu item should be built: a plain item, a radio item
-/// (feeds — exactly one is ever current), or a check item (the speech
-/// toggle). Read by `app::command_marked`/`command_state_text`, which is
-/// also where the *value* of the mark comes from, since that lives in
-/// application state this module knows nothing about.
+/// How a command's menu item should be built: a plain item, a radio item (feeds — exactly one is ever current), or a check item (the speech toggle). Read by `app::command_marked`/`command_state_text`, which is also where the *value* of the mark comes from, since that lives in application state this module knows nothing about.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Kind {
     Normal,
@@ -42,8 +28,7 @@ pub enum Kind {
     Checkbox,
 }
 
-/// Base ids for each fixed command, spaced out to leave room for `SelectFeed`
-/// (one id per entry in `Feed::ALL`) without colliding with the rest.
+/// Base ids for each fixed command, spaced out to leave room for `SelectFeed` (one id per entry in `Feed::ALL`) without colliding with the rest.
 const ID_FEED_BASE: i32 = 100;
 const ID_RELOAD: i32 = 200;
 const ID_OPEN_COMMENTS: i32 = 201;
@@ -57,9 +42,7 @@ const ID_OPEN_HELP: i32 = 208;
 const ID_QUIT: i32 = 209;
 
 impl Command {
-    /// The label for commands whose wording is not user-editable. `None` for
-    /// `SelectFeed`, whose text is a template (see `Templates::feed_title`)
-    /// like every other user-facing word in this application.
+    /// The label for commands whose wording is not user-editable. `None` for `SelectFeed`, whose text is a template (see `Templates::feed_title`) like every other user-facing word in this application.
     pub fn label(self) -> Option<&'static str> {
         match self {
             Command::SelectFeed(_) => None,
@@ -139,9 +122,7 @@ pub struct Bar {
 }
 
 impl Bar {
-    /// The entries a user can actually land on. Separators are skipped
-    /// because nothing focuses them, so counting them would make every
-    /// spoken position wrong.
+    /// The entries a user can actually land on. Separators are skipped because nothing focuses them, so counting them would make every spoken position wrong.
     pub fn commands(&self) -> impl Iterator<Item = Command> + '_ {
         self.items.iter().filter_map(|item| match item {
             Item::Entry(command) => Some(*command),
@@ -150,12 +131,9 @@ impl Bar {
     }
 }
 
-/// Where a command sits in its menu: its 1-based position, and how many
-/// entries that menu holds.
+/// Where a command sits in its menu: its 1-based position, and how many entries that menu holds.
 ///
-/// wxWidgets tells us *which* item is highlighted but not where it is in the
-/// menu, and this is the only place that knows — so with no screen reader
-/// running to say it, this is where "3 of 8" comes from.
+/// wxWidgets tells us *which* item is highlighted but not where it is in the menu, and this is the only place that knows — so with no screen reader running to say it, this is where "3 of 8" comes from.
 pub fn position_of(command: Command) -> Option<(usize, usize)> {
     BARS.iter().find_map(|bar| {
         let count = bar.commands().count();
@@ -228,8 +206,7 @@ mod tests {
 
     #[test]
     fn a_commands_position_counts_entries_and_not_separators() {
-        // Reload sits after a separator, which nothing focuses, so it is the
-        // seventh entry of the Feed menu rather than the eighth.
+        // Reload sits after a separator, which nothing focuses, so it is the seventh entry of the Feed menu rather than the eighth.
         assert_eq!(position_of(Command::Reload), Some((7, 7)));
         assert_eq!(position_of(Command::SelectFeed(Feed::Top)), Some((1, 7)));
         assert_eq!(position_of(Command::Quit), Some((3, 3)));

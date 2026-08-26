@@ -1,9 +1,6 @@
 //! Hacker News Firebase API client.
 //!
-//! The public API is unauthenticated but chatty: every story and comment is a
-//! separate request. Everything here is blocking and meant to run on a worker
-//! thread; batches are fetched with a small pool of scoped threads so a list of
-//! 30 stories costs one round trip's latency rather than 30.
+//! The public API is unauthenticated but chatty: every story and comment is a separate request. Everything here is blocking and meant to run on a worker thread; batches are fetched with a small pool of scoped threads so a list of 30 stories costs one round trip's latency rather than 30.
 
 use serde::Deserialize;
 use std::time::Duration;
@@ -12,8 +9,7 @@ use crate::templates::{Template, Templates};
 
 const API: &str = "https://hacker-news.firebaseio.com/v0";
 
-/// How many requests we allow in flight at once. HN tolerates this comfortably
-/// and it keeps a cold comment thread under a couple of seconds.
+/// How many requests we allow in flight at once. HN tolerates this comfortably and it keeps a cold comment thread under a couple of seconds.
 const PARALLELISM: usize = 8;
 
 /// The story lists HN exposes.
@@ -61,9 +57,7 @@ impl Feed {
     }
 }
 
-/// A single HN item. Every field beyond `id` is optional because the API omits
-/// them freely: deleted comments have no author, job posts have no score, and
-/// self-posts have no URL.
+/// A single HN item. Every field beyond `id` is optional because the API omits them freely: deleted comments have no author, job posts have no score, and self-posts have no URL.
 #[derive(Debug, Clone, Deserialize)]
 pub struct Item {
     pub id: u64,
@@ -92,14 +86,12 @@ pub struct Item {
 }
 
 impl Item {
-    /// The HN discussion page for this item, which is the only link that always
-    /// exists (self-posts have no external URL).
+    /// The HN discussion page for this item, which is the only link that always exists (self-posts have no external URL).
     pub fn hn_url(&self) -> String {
         format!("https://news.ycombinator.com/item?id={}", self.id)
     }
 
-    /// Deleted and flagged-dead items still appear in `kids` lists; we keep them
-    /// out of the reading order rather than announcing empty rows.
+    /// Deleted and flagged-dead items still appear in `kids` lists; we keep them out of the reading order rather than announcing empty rows.
     pub fn is_readable(&self) -> bool {
         !self.deleted && !self.dead
     }
@@ -151,16 +143,14 @@ impl Client {
         Ok(ids)
     }
 
-    /// Fetch one item. HN returns literal `null` for ids that no longer exist,
-    /// which deserializes to `None` rather than erroring.
+    /// Fetch one item. HN returns literal `null` for ids that no longer exist, which deserializes to `None` rather than erroring.
     pub fn item(&self, id: u64) -> Result<Option<Item>, String> {
         self.get_json(&format!("{API}/item/{id}.json"))
     }
 
     /// Fetch many items concurrently, preserving the order of `ids`.
     ///
-    /// Individual failures are dropped rather than failing the whole batch: one
-    /// dead story should not cost the reader the other twenty-nine.
+    /// Individual failures are dropped rather than failing the whole batch: one dead story should not cost the reader the other twenty-nine.
     pub fn items(&self, ids: &[u64]) -> Vec<Item> {
         if ids.is_empty() {
             return Vec::new();
@@ -170,8 +160,7 @@ impl Client {
         let mut indexed: Vec<(usize, Item)> = std::thread::scope(|scope| {
             let handles: Vec<_> = (0..workers)
                 .map(|w| {
-                    // Stride assignment keeps each worker's share even without
-                    // needing a shared work queue.
+                    // Stride assignment keeps each worker's share even without needing a shared work queue.
                     scope.spawn(move || {
                         let mut out = Vec::new();
                         for (i, id) in ids.iter().enumerate().skip(w).step_by(workers) {
@@ -197,10 +186,7 @@ impl Client {
 
     /// Load a story's comment thread, flattened into reading (depth-first) order.
     ///
-    /// Fetching is done one level at a time so each level's requests run in
-    /// parallel, then the tree is walked depth-first to produce the order a
-    /// reader actually wants. `max` bounds the work for threads with thousands
-    /// of comments.
+    /// Fetching is done one level at a time so each level's requests run in parallel, then the tree is walked depth-first to produce the order a reader actually wants. `max` bounds the work for threads with thousands of comments.
     pub fn comment_thread(&self, root_kids: &[u64], max: usize) -> Vec<CommentRow> {
         use std::collections::HashMap;
 
@@ -224,8 +210,7 @@ impl Client {
             level = next;
         }
 
-        // Walk depth-first with an explicit stack so deep threads cannot blow
-        // the real stack.
+        // Walk depth-first with an explicit stack so deep threads cannot blow the real stack.
         let mut rows = Vec::new();
         let mut stack: Vec<(u64, usize)> = root_kids.iter().rev().map(|id| (*id, 0usize)).collect();
 
@@ -249,9 +234,7 @@ impl Client {
 
 /// Format a Unix timestamp as an approximate age, e.g. "3 hours ago".
 ///
-/// Singular and plural are separate templates rather than an appended "s",
-/// because that trick only works in English and this wording is the user's to
-/// change.
+/// Singular and plural are separate templates rather than an appended "s", because that trick only works in English and this wording is the user's to change.
 pub fn relative_time(unix: Option<i64>, templates: &Templates) -> String {
     let Some(unix) = unix else {
         return templates.render(Template::TimeUnknown, &[]);
@@ -276,8 +259,7 @@ pub fn relative_time(unix: Option<i64>, templates: &Templates) -> String {
     templates.render(template, &[("count", &n.to_string())])
 }
 
-/// The bare domain of a URL, which is the part a reader wants announced
-/// alongside a headline.
+/// The bare domain of a URL, which is the part a reader wants announced alongside a headline.
 pub fn domain_of(url: &str) -> Option<String> {
     let rest = url.split_once("://").map(|(_, r)| r).unwrap_or(url);
     let host = rest.split('/').next()?;
