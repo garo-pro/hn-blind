@@ -1,20 +1,20 @@
 //! Direct speech and braille output via Prism.
 //!
-//! This complements, rather than duplicates, the AccessKit tree. AccessKit
-//! describes *what is focused* and the user's screen reader announces it.
-//! Prism handles output that has no focused node behind it: load progress,
-//! errors, feed changes, and explicit "read this to me now" requests. Keeping
-//! the two responsibilities disjoint is what stops every action being spoken
-//! twice.
+//! This complements, rather than duplicates, what the native controls say.
+//! wxWidgets exposes *what is focused* to the platform's accessibility API
+//! and the user's screen reader announces it. Prism handles output that has
+//! no focused control behind it: load progress, errors, feed changes, and
+//! explicit "read this to me now" requests. Keeping the two responsibilities
+//! disjoint is what stops every action being spoken twice.
 
 use prism::{Backend, BackendFeatures, BackendId, Context};
 
 /// Backends that are speech engines rather than screen readers.
 ///
 /// The distinction drives one real decision: if a screen reader is running it
-/// announces focus changes from the AccessKit tree, so we must stay quiet. If
-/// Prism only found a bare TTS engine, nothing else is speaking and we have to
-/// announce focus ourselves.
+/// announces focus changes from the native controls, so we must stay quiet.
+/// If Prism only found a bare TTS engine, nothing else is speaking and we
+/// have to announce focus ourselves.
 const TTS_ONLY: [BackendId; 6] = [
     BackendId::SAPI,
     BackendId::ONE_CORE,
@@ -31,8 +31,8 @@ pub struct Speaker {
     _context: Option<Context>,
     features: BackendFeatures,
     enabled: bool,
-    /// True when a screen reader is driving output, meaning AccessKit already
-    /// announces focus and we should not.
+    /// True when a screen reader is driving output, meaning it already
+    /// announces focus from the controls themselves and we should not.
     screen_reader: bool,
     status: String,
 }
@@ -41,7 +41,8 @@ impl Speaker {
     /// Connect to the best available screen reader or TTS backend.
     ///
     /// Failure is never fatal: with no backend the app is still fully usable
-    /// through AccessKit, so we record why and carry on silently.
+    /// through the screen reader's own reading of the native controls, so we
+    /// record why and carry on silently.
     pub fn new() -> Self {
         match Self::connect() {
             Ok(speaker) => speaker,
@@ -90,8 +91,8 @@ impl Speaker {
     /// Whether *we* are responsible for announcing focus changes.
     ///
     /// Only true when Prism is driving a bare TTS engine: with a screen reader
-    /// attached, AccessKit already announces the focused row and speaking here
-    /// would double every movement.
+    /// attached, the list or tree already announces the focused row and
+    /// speaking here would double every movement.
     pub fn announces_focus(&self) -> bool {
         self.is_enabled() && !self.screen_reader
     }

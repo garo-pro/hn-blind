@@ -2,8 +2,9 @@
 //!
 //! Split out from the binary so the parts worth testing — the API client, the
 //! HTML-to-speech-text conversion, the wording of every announcement, and the
-//! projection of application state into an AccessKit tree — can be exercised
-//! without opening a window.
+//! state that decides which of them applies — can be exercised without
+//! opening a window. Nothing here links against wxWidgets; `main.rs` owns
+//! every widget.
 
 pub mod app;
 pub mod config;

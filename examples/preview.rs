@@ -68,13 +68,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("{}", app.row_label(index));
     }
 
-    // The tree that a screen reader would actually see.
-    let update = app.build_tree(true);
-    println!(
-        "\naccessibility tree: {} nodes, focus on {:?}",
-        update.nodes.len(),
-        update.focus
-    );
+    // And the first comment as `P` would read it out: the one piece of
+    // wording that never appears in a row label.
+    println!("\n== read in full ==\n{}", app.selected_detail());
 
     Ok(())
 }

@@ -138,6 +138,33 @@ pub struct Bar {
     pub items: &'static [Item],
 }
 
+impl Bar {
+    /// The entries a user can actually land on. Separators are skipped
+    /// because nothing focuses them, so counting them would make every
+    /// spoken position wrong.
+    pub fn commands(&self) -> impl Iterator<Item = Command> + '_ {
+        self.items.iter().filter_map(|item| match item {
+            Item::Entry(command) => Some(*command),
+            Item::Separator => None,
+        })
+    }
+}
+
+/// Where a command sits in its menu: its 1-based position, and how many
+/// entries that menu holds.
+///
+/// wxWidgets tells us *which* item is highlighted but not where it is in the
+/// menu, and this is the only place that knows — so with no screen reader
+/// running to say it, this is where "3 of 8" comes from.
+pub fn position_of(command: Command) -> Option<(usize, usize)> {
+    BARS.iter().find_map(|bar| {
+        let count = bar.commands().count();
+        bar.commands()
+            .position(|entry| entry == command)
+            .map(|index| (index + 1, count))
+    })
+}
+
 pub const BARS: &[Bar] = &[
     Bar {
         name: "Feed",
@@ -197,5 +224,14 @@ mod tests {
     #[test]
     fn unknown_ids_map_to_nothing() {
         assert_eq!(Command::from_id(-1), None);
+    }
+
+    #[test]
+    fn a_commands_position_counts_entries_and_not_separators() {
+        // Reload sits after a separator, which nothing focuses, so it is the
+        // seventh entry of the Feed menu rather than the eighth.
+        assert_eq!(position_of(Command::Reload), Some((7, 7)));
+        assert_eq!(position_of(Command::SelectFeed(Feed::Top)), Some((1, 7)));
+        assert_eq!(position_of(Command::Quit), Some((3, 3)));
     }
 }

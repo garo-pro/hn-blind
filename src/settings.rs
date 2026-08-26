@@ -98,17 +98,6 @@ impl Settings {
         matches!(self.focused_field(), Some(Field::EscapeExits))
     }
 
-    /// The index of the first field of each group, in order — the parent
-    /// nodes of the settings tree.
-    pub fn group_starts(&self) -> Vec<usize> {
-        let fields = self.fields();
-        fields
-            .iter()
-            .enumerate()
-            .filter(|(index, field)| *index == 0 || fields[index - 1].group() != field.group())
-            .map(|(index, _)| index)
-            .collect()
-    }
 
     /// Select a field of the active tab, in response to the tree control's
     /// own selection-changed event.
@@ -151,6 +140,24 @@ pub fn fields_of(tab: usize) -> Vec<Field> {
     }
 }
 
+/// The same fields, cut into their groups: each entry is a group and the
+/// stretch of `fields` that belongs to it.
+///
+/// Fields are declared in group order, so this is a scan rather than a sort.
+/// A screen reader announces entering and leaving a group, which is what
+/// makes seventy fields a list a person can move through rather than a wall
+/// — so the grouping is a real part of the interface, not decoration.
+pub fn groups(fields: &[Field]) -> Vec<(Group, std::ops::Range<usize>)> {
+    let mut groups: Vec<(Group, std::ops::Range<usize>)> = Vec::new();
+    for (index, field) in fields.iter().enumerate() {
+        match groups.last_mut() {
+            Some((group, range)) if *group == field.group() => range.end = index + 1,
+            _ => groups.push((field.group(), index..index + 1)),
+        }
+    }
+    groups
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -181,11 +188,16 @@ mod tests {
     }
 
     #[test]
-    fn groups_can_be_found_from_the_field_list() {
-        let settings = Settings::new();
-        let starts = settings.group_starts();
-        assert!(starts.len() > 1, "the fields fall into several groups");
-        assert_eq!(starts[0], 0);
+    fn groups_cover_the_field_list_in_order_without_gaps() {
+        let fields = fields_of(0);
+        let groups = groups(&fields);
+        assert!(groups.len() > 1, "the fields fall into several groups");
+        assert_eq!(groups[0].1.start, 0);
+        assert_eq!(groups.last().unwrap().1.end, fields.len());
+        for pair in groups.windows(2) {
+            assert_eq!(pair[0].1.end, pair[1].1.start, "no field belongs to no group");
+            assert_ne!(pair[0].0, pair[1].0, "a group is not split in two");
+        }
     }
 
     #[test]

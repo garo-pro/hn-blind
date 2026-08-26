@@ -17,17 +17,20 @@ use std::rc::Rc;
 use std::sync::mpsc;
 use std::thread;
 
-use wxdragon::event::{IdleEvent, IdleMode, WindowEvents};
+use wxdragon::event::{IdleEvent, IdleMode, TextEventData, TreeEventData, WindowEvents};
 use wxdragon::keycode::{WXK_DOWN, WXK_END, WXK_ESCAPE, WXK_F1, WXK_F5, WXK_HOME, WXK_PAGEDOWN, WXK_PAGEUP, WXK_UP};
 use wxdragon::prelude::*;
+use wxdragon::widgets::checkbox::CheckBoxEventData;
 use wxdragon::widgets::item_data::HasItemData;
+use wxdragon::widgets::list_ctrl::ListCtrlEventData;
+use wxdragon::widgets::notebook::NotebookPageChangedEvent;
 
 use hn_blind::app::{App, View};
 use hn_blind::config;
 use hn_blind::hn::{self, CommentRow, Feed, Item};
 use hn_blind::menu::{self, Command, Item as MenuEntry, Kind};
 use hn_blind::preferences;
-use hn_blind::settings::{Field, TABS, fields_of};
+use hn_blind::settings::{Field, TABS, fields_of, groups};
 use hn_blind::speech::Speaker;
 use hn_blind::templates::{Template, validate};
 
@@ -85,10 +88,32 @@ struct Gui {
     /// `RefCell` while it may still be borrowed.
     suppress: Rc<Cell<bool>>,
     frame: Frame,
+    /// The frame's content area, holding `list` and `tree`. Kept so that
+    /// hiding one and showing the other can be followed by a re-layout,
+    /// which is what hands the whole area to whichever one is now visible.
+    panel: Panel,
     list: ListCtrl,
     tree: TreeCtrl,
-    menu_bar: MenuBar,
+    /// Behind an `Rc` only because `MenuBar`, alone among the handles here,
+    /// is not `Clone`: the frame owns the real menu bar and this is a
+    /// borrowed view of it.
+    menu_bar: Rc<MenuBar>,
 }
+
+/// `ListCtrl` is the one control here that wxdragon does not give the
+/// `WindowEvents` category to, so it cannot be passed to `bind_content_keys`
+/// beside `TreeCtrl`. Every method of that trait is a default over
+/// `WxEvtHandler`, so a local wrapper earns them all back — cheaper than a
+/// second copy of the key handling for the sake of one widget.
+struct KeyTarget(ListCtrl);
+
+impl WxEvtHandler for KeyTarget {
+    unsafe fn get_event_handler_ptr(&self) -> *mut wxdragon::ffi::wxd_EvtHandler_t {
+        unsafe { self.0.get_event_handler_ptr() }
+    }
+}
+
+impl WindowEvents for KeyTarget {}
 
 fn main() {
     SystemOptions::set_option_by_int("msw.no-manifest-check", 1);
@@ -114,7 +139,14 @@ fn run() {
     let panel = Panel::builder(&frame).build();
     let sizer = BoxSizer::builder(Orientation::Vertical).build();
 
-    let list = ListCtrl::builder(&panel).with_style(ListCtrlStyle::Report).build();
+    // Report mode with a single unnamed column: one row is one announcement,
+    // and the row label carries everything. `SingleSel` because the cursor
+    // this application tracks is a single row — a range selection would be
+    // something it could not describe. `NoHeader` because a column with no
+    // name has no header worth landing on.
+    let list = ListCtrl::builder(&panel)
+        .with_style(ListCtrlStyle::Report | ListCtrlStyle::SingleSel | ListCtrlStyle::NoHeader)
+        .build();
     list.insert_column(0, "", ListColumnFormat::Left, 860);
     let tree = TreeCtrl::builder(&panel)
         .with_style(TreeCtrlStyle::HasButtons | TreeCtrlStyle::LinesAtRoot | TreeCtrlStyle::HideRoot)
@@ -139,21 +171,22 @@ fn run() {
         comment_items: Vec::new(),
     }));
 
-    let menu_bar = build_menu_bar();
+    let menu_bar = build_menu_bar(&state.borrow().app);
     frame.set_menu_bar(menu_bar);
-    let menu_bar = frame.get_menu_bar().expect("menu bar was just set");
+    let menu_bar = Rc::new(frame.get_menu_bar().expect("menu bar was just set"));
 
     let gui = Gui {
         state,
         suppress: Rc::new(Cell::new(false)),
         frame,
+        panel,
         list,
         tree,
         menu_bar,
     };
 
     bind_menu_events(&gui);
-    bind_content_keys(&gui.list, &gui);
+    bind_content_keys(&KeyTarget(gui.list), &gui);
     bind_content_keys(&gui.tree, &gui);
     bind_content_selection(&gui);
     bind_worker_idle(&gui, worker_rx);
@@ -244,16 +277,19 @@ fn enter_view(gui: &Gui, status: impl Into<String>) {
 /// (with no screen reader doing it for us) speak the row that landed under
 /// it.
 fn moved(gui: &Gui) {
-    let (view, cursor, count, items) = {
-        let s = gui.state.borrow();
-        (s.app.view, s.app.cursor(), s.app.row_count(), s.comment_items.clone())
-    };
-
+    // `suppress` is what makes it safe to hold this borrow across a call
+    // into wxWidgets: the selection events it fires synchronously turn
+    // around at the top of their handlers without touching `state`. Holding
+    // it rather than copying is what keeps a four-hundred-comment thread
+    // from cloning every one of its tree item handles on each keypress.
     gui.suppress.set(true);
-    match view {
-        View::Stories | View::Help => select_list_row(&gui.list, cursor, count),
-        View::Comments => select_tree_row(&gui.tree, &items, cursor),
-        View::Settings => {}
+    {
+        let s = gui.state.borrow();
+        match s.app.view {
+            View::Stories | View::Help => select_list_row(&gui.list, s.app.cursor(), s.app.row_count()),
+            View::Comments => select_tree_row(&gui.tree, &s.comment_items, s.app.cursor()),
+            View::Settings => {}
+        }
     }
     gui.suppress.set(false);
 
@@ -304,28 +340,33 @@ fn populate_view(gui: &Gui) {
             let mut items: Vec<TreeItemId> = Vec::new();
             {
                 let s = gui.state.borrow();
-                if !s.app.comments.is_empty() {
-                    if let Some(root) = gui.tree.add_root("Comments", None, None) {
-                        let mut stack: Vec<(i64, TreeItemId)> = Vec::new();
-                        for (i, row) in s.app.comments.iter().enumerate() {
-                            let depth = row.depth as i64;
-                            while stack.last().is_some_and(|(d, _)| *d >= depth) {
-                                stack.pop();
-                            }
-                            let parent = stack.last().map(|(_, id)| id).unwrap_or(&root);
-                            let label = s.app.row_label(i);
-                            if let Some(item) = gui.tree.append_item_with_data(parent, &label, i, None, None) {
-                                items.push(item.clone());
-                                stack.push((depth, item));
-                            }
+                if !s.app.comments.is_empty()
+                    && let Some(root) = gui.tree.add_root("Comments", None, None)
+                {
+                    // The thread arrives flattened into reading order with a
+                    // depth on each row; `stack` turns that back into nesting,
+                    // which is what makes the tree announce reply level.
+                    let mut stack: Vec<(i64, TreeItemId)> = Vec::new();
+                    for (i, row) in s.app.comments.iter().enumerate() {
+                        let depth = row.depth as i64;
+                        while stack.last().is_some_and(|(d, _)| *d >= depth) {
+                            stack.pop();
                         }
-                        gui.tree.expand_all();
+                        let parent = stack.last().map(|(_, id)| id).unwrap_or(&root);
+                        let label = s.app.row_label(i);
+                        if let Some(item) = gui.tree.append_item_with_data(parent, &label, i, None, None) {
+                            items.push(item.clone());
+                            stack.push((depth, item));
+                        }
                     }
+                    gui.tree.expand_all();
                 }
             }
-            gui.state.borrow_mut().comment_items = items.clone();
-            let cursor = gui.state.borrow().app.cursor();
-            select_tree_row(&gui.tree, &items, cursor);
+
+            gui.state.borrow_mut().comment_items = items;
+            let s = gui.state.borrow();
+            let cursor = s.app.cursor();
+            select_tree_row(&gui.tree, &s.comment_items, cursor);
         }
         View::Settings => {
             gui.list.show(false);
@@ -333,6 +374,9 @@ fn populate_view(gui: &Gui) {
         }
     }
 
+    // A hidden control is dropped from the sizer's reckoning, so this is
+    // what gives the one that was just shown the whole content area.
+    gui.panel.layout();
     gui.suppress.set(false);
 }
 
@@ -490,13 +534,20 @@ fn open_url(gui: &Gui, url: Option<String>, what: Template) {
 
 fn read_selection(gui: &Gui) {
     let detail = gui.state.borrow().app.selected_detail();
+    say_on_demand(gui, detail);
+}
+
+/// Say something the user has explicitly asked to hear.
+///
+/// Unlike a status message this is not transient chatter, so it goes out
+/// whichever channel is listening: Prism when it has a backend, and the
+/// status line otherwise, where the screen reader picks it up instead.
+fn say_on_demand(gui: &Gui, text: String) {
     let enabled = gui.state.borrow().speaker.is_enabled();
     if enabled {
-        gui.state.borrow_mut().speaker.announce(&detail);
+        gui.state.borrow_mut().speaker.announce(&text);
     } else {
-        // With no speech backend, route it through the status line so the
-        // screen reader reads it instead.
-        set_status(gui, detail);
+        set_status(gui, text);
     }
 }
 
@@ -649,18 +700,19 @@ fn bind_content_keys<W: WindowEvents>(widget: &W, gui: &Gui) {
     let g = gui.clone();
     widget.on_key_down(move |e: WindowEventData| {
         let handled = matches!(&e, WindowEventData::Keyboard(kb) if kb.get_key_code().is_some_and(|code| handle_named_key(&g, code)));
-        if handled {
-            e.skip(false);
-        }
+        // A bound handler that does not skip swallows the key. Anything we
+        // did not act on has to go on to the control and then to wxWidgets
+        // itself, or Tab would not move focus, Alt would not open the menu
+        // bar, and — since a character event only follows a key-down that
+        // was skipped — `on_char` below would never run at all.
+        e.skip(!handled);
     });
 
     let g = gui.clone();
     widget.on_char(move |e: WindowEventData| {
         let handled = matches!(&e, WindowEventData::Keyboard(kb)
             if kb.get_unicode_key().and_then(|cp| char::from_u32(cp as u32)).is_some_and(|ch| handle_char(&g, ch)));
-        if handled {
-            e.skip(false);
-        }
+        e.skip(!handled);
     });
 }
 
@@ -701,7 +753,10 @@ fn bind_content_selection(gui: &Gui) {
 
 // ---- The menu bar -----------------------------------------------------------
 
-fn build_menu_bar() -> MenuBar {
+/// Build the menu bar. Takes the application because one command — choosing
+/// a feed — is labelled with a user-editable template rather than a fixed
+/// word, and wxWidgets has no use for a menu item with no text on it.
+fn build_menu_bar(app: &App) -> MenuBar {
     let mut builder = MenuBar::builder();
     for bar in menu::BARS {
         let mut menu_builder = Menu::builder();
@@ -709,7 +764,7 @@ fn build_menu_bar() -> MenuBar {
             menu_builder = match item {
                 MenuEntry::Separator => menu_builder.append_separator(),
                 MenuEntry::Entry(command) => {
-                    let label = command.label().unwrap_or("").to_string();
+                    let label = app.command_label(*command);
                     match command.kind() {
                         Kind::Normal => menu_builder.append_item(command.id(), &label, ""),
                         Kind::Checkbox => menu_builder.append_check_item(command.id(), &label, ""),
@@ -729,7 +784,7 @@ fn build_menu_bar() -> MenuBar {
 fn sync_feed_labels(gui: &Gui) {
     let s = gui.state.borrow();
     for feed in Feed::ALL {
-        let command = Command::SelectFeed(*feed);
+        let command = Command::SelectFeed(feed);
         if let Some(item) = gui.menu_bar.find_item(command.id()) {
             item.set_label(&s.app.command_label(command));
         }
@@ -742,11 +797,11 @@ fn sync_menu_checks(gui: &Gui) {
     let s = gui.state.borrow();
     for bar in menu::BARS {
         for item in bar.items {
-            if let MenuEntry::Entry(command) = item {
-                if command.kind() != Kind::Normal {
-                    let marked = s.app.command_marked(*command, s.speaker.is_enabled());
-                    gui.menu_bar.check_item(command.id(), marked);
-                }
+            if let MenuEntry::Entry(command) = item
+                && command.kind() != Kind::Normal
+            {
+                let marked = s.app.command_marked(*command, s.speaker.is_enabled());
+                gui.menu_bar.check_item(command.id(), marked);
             }
         }
     }
@@ -768,13 +823,17 @@ fn bind_menu_events(gui: &Gui) {
             return;
         }
         let speech_active = s.speaker.is_enabled();
+        let (index, count) = match menu::position_of(command) {
+            Some((index, count)) => (index.to_string(), count.to_string()),
+            None => (String::new(), String::new()),
+        };
         let text = s.app.text(
             Template::MenuItemFocus,
             &[
                 ("name", &s.app.command_label(command)),
                 ("state", &s.app.command_state_text(command, speech_active)),
-                ("index", ""),
-                ("count", ""),
+                ("index", &index),
+                ("count", &count),
             ],
         );
         drop(s);
@@ -833,35 +892,55 @@ fn open_settings(gui: &Gui) {
         .build();
 
     let notebook = Notebook::builder(&dialog).build();
-    for tab_index in 0..TABS.len() {
+    for (tab_index, tab) in TABS.iter().enumerate() {
         let page = build_settings_page(&notebook, tab_index, gui);
-        notebook.add_page(&page, TABS[tab_index].name, tab_index == 0, None);
+        // Even the name on a tab is a template, like every other word this
+        // application shows or says.
+        let label = gui.state.borrow().app.text(
+            Template::SettingsTabLabel,
+            &[
+                ("name", tab.name),
+                ("index", &(tab_index + 1).to_string()),
+                ("count", &TABS.len().to_string()),
+            ],
+        );
+        notebook.add_page(&page, &label, tab_index == 0, None);
     }
     {
         let g = gui.clone();
         notebook.on_page_changed(move |e: NotebookPageChangedEvent| {
-            if let Some(selection) = e.get_selection() {
-                g.state.borrow_mut().app.settings.select_tab(selection as usize);
+            let Some(selection) = e.get_selection() else { return };
+            g.state.borrow_mut().app.settings.select_tab(selection as usize);
+
+            let s = g.state.borrow();
+            if !s.speaker.announces_focus() {
+                return;
             }
+            let text = s.app.text(
+                Template::SettingsTabFocus,
+                &[
+                    ("name", s.app.settings.tab_name()),
+                    ("index", &(s.app.settings.tab() + 1).to_string()),
+                    ("count", &TABS.len().to_string()),
+                ],
+            );
+            drop(s);
+            g.state.borrow_mut().speaker.announce(&text);
         });
     }
 
     let close_button = Button::builder(&dialog).with_label("Close").build();
-    {
-        let dialog = dialog;
-        close_button.on_click(move |_| dialog.end_modal(ID_OK));
-    }
-    {
-        let dialog = dialog;
-        dialog.on_key_down(move |e: WindowEventData| {
-            if let WindowEventData::Keyboard(kb) = &e {
-                if kb.get_key_code() == Some(WXK_ESCAPE) {
-                    dialog.end_modal(ID_CANCEL);
-                    e.skip(false);
-                }
-            }
-        });
-    }
+    close_button.on_click(move |_| dialog.end_modal(ID_OK));
+
+    // wxWidgets closes a dialog on Escape by itself in most cases; saying so
+    // here makes it true in all of them, and costs one comparison.
+    dialog.on_key_down(move |e: WindowEventData| {
+        let escape = matches!(&e, WindowEventData::Keyboard(kb) if kb.get_key_code() == Some(WXK_ESCAPE));
+        if escape {
+            dialog.end_modal(ID_CANCEL);
+        }
+        e.skip(!escape);
+    });
 
     let dialog_sizer = BoxSizer::builder(Orientation::Vertical).build();
     dialog_sizer.add(&notebook, 1, SizerFlag::Expand | SizerFlag::All, 8);
@@ -904,18 +983,18 @@ fn build_settings_page(parent: &Notebook, tab_index: usize, gui: &Gui) -> Panel 
 
     let fields = fields_of(tab_index);
     if let Some(root) = tree.add_root("Fields", None, None) {
-        let mut index = 0;
-        while index < fields.len() {
-            let group = fields[index].group();
-            let start = index;
-            while index < fields.len() && fields[index].group() == group {
-                index += 1;
-            }
-            if let Some(group_item) = tree.append_item(&root, group.name(), None, None) {
-                for (position, field) in fields[start..index].iter().enumerate() {
-                    let field_index = start + position;
-                    tree.append_item_with_data(&group_item, field.label(), field_index, None, None);
-                }
+        let s = gui.state.borrow();
+        for (group, range) in groups(&fields) {
+            let group_label = s.app.text(
+                Template::SettingsGroupLabel,
+                &[("name", group.name()), ("count", &range.len().to_string())],
+            );
+            let Some(group_item) = tree.append_item(&root, &group_label, None, None) else {
+                continue;
+            };
+            for field_index in range {
+                let label = s.app.field_label_text(fields[field_index], field_index, fields.len());
+                tree.append_item_with_data(&group_item, &label, field_index, None, None);
             }
         }
         tree.expand_all();
@@ -974,10 +1053,10 @@ fn build_settings_page(parent: &Notebook, tab_index: usize, gui: &Gui) -> Panel 
         let g = gui.clone();
         text_ctrl.on_text_updated(move |e: TextEventData| {
             let field = g.state.borrow().app.settings.focused_field();
-            if let Some(Field::Template(template)) = field {
-                if let Some(value) = e.get_string() {
-                    g.state.borrow_mut().app.templates.set(template, value);
-                }
+            if let Some(Field::Template(template)) = field
+                && let Some(value) = e.get_string()
+            {
+                g.state.borrow_mut().app.templates.set(template, value);
             }
         });
     }
@@ -989,39 +1068,73 @@ fn build_settings_page(parent: &Notebook, tab_index: usize, gui: &Gui) -> Panel 
         });
     }
 
-    {
-        let g = gui.clone();
-        tree.on_key_down(move |e: WindowEventData| {
-            let Some(WXK_F5) = (if let WindowEventData::Keyboard(kb) = &e { kb.get_key_code() } else { None }) else {
-                return;
-            };
-            let reset = {
-                let mut s = g.state.borrow_mut();
-                let templates = &mut s.app.templates as *mut _;
-                // SAFETY: `settings` and `templates` are disjoint fields of `app`;
-                // the raw pointer only works around the borrow checker not seeing
-                // through the two-level field access on a `RefMut`.
-                s.app.settings.reset_field(unsafe { &mut *templates })
-            };
-            if let Some(field) = reset {
-                let (value, status) = {
-                    let s = g.state.borrow();
-                    (
-                        s.app.templates.get(field).to_string(),
-                        s.app.text(
-                            Template::TemplateReset,
-                            &[("name", field.label()), ("default", field.default_text())],
-                        ),
-                    )
-                };
-                text_ctrl.set_value(&value);
-                set_status(&g, status);
-            }
-            e.skip(false);
-        });
-    }
+    bind_settings_keys(&tree, gui, text_ctrl);
+    bind_settings_keys(&text_ctrl, gui, text_ctrl);
+    bind_settings_keys(&checkbox, gui, text_ctrl);
 
     panel
+}
+
+/// The two keys the settings dialog adds to what wxWidgets already does for
+/// it: F1 for the key list, F5 to restore a field's default.
+///
+/// Bound to every control the dialog can put focus on, because picking a
+/// field in the tree moves focus into the editor — binding the tree alone
+/// would put F5 out of reach exactly when a user wants it.
+fn bind_settings_keys<W: WindowEvents>(widget: &W, gui: &Gui, text_ctrl: TextCtrl) {
+    let g = gui.clone();
+    widget.on_key_down(move |e: WindowEventData| {
+        let code = if let WindowEventData::Keyboard(kb) = &e { kb.get_key_code() } else { None };
+        match code {
+            Some(WXK_F1) => speak_settings_keys(&g),
+            Some(WXK_F5) => reset_focused_field(&g, &text_ctrl),
+            // Everything else is the dialog's own: the tree moves between
+            // fields, the editor edits, Tab moves between the two.
+            _ => {
+                e.skip(true);
+                return;
+            }
+        }
+        e.skip(false);
+    });
+}
+
+fn speak_settings_keys(gui: &Gui) {
+    let s = gui.state.borrow();
+    let text = s.app.text(
+        Template::SettingsKeys,
+        &[
+            ("tab", s.app.settings.tab_name()),
+            ("index", &(s.app.settings.tab() + 1).to_string()),
+            ("count", &TABS.len().to_string()),
+        ],
+    );
+    drop(s);
+    say_on_demand(gui, text);
+}
+
+/// Put the selected field back to its compiled-in default, in the model and
+/// in the editor showing it. A no-op on the checkbox, which has no text.
+fn reset_focused_field(gui: &Gui, text_ctrl: &TextCtrl) {
+    let reset = {
+        let mut state = gui.state.borrow_mut();
+        let app = &mut state.app;
+        app.settings.reset_field(&mut app.templates)
+    };
+    let Some(field) = reset else { return };
+
+    let (value, status) = {
+        let s = gui.state.borrow();
+        (
+            s.app.templates.get(field).to_string(),
+            s.app.text(
+                Template::TemplateReset,
+                &[("name", field.label()), ("default", field.default_text())],
+            ),
+        )
+    };
+    text_ctrl.set_value(&value);
+    set_status(gui, status);
 }
 
 /// Leave the dialog, writing the edits to disk.
@@ -1100,7 +1213,11 @@ fn spawn_worker() -> (mpsc::Sender<Request>, mpsc::Receiver<WorkResult>) {
             if sent.is_err() {
                 break; // The GUI is gone; so are we.
             }
-            wxdragon::call_after(Box::new(|| {}));
+            // The GUI thread is asleep in the event loop and nothing it can
+            // see has changed, so poke it: this is the one wx call that is
+            // safe from another thread, and it is what makes the idle
+            // handler in `bind_worker_idle` run and pick the result up.
+            wxdragon::wake_up_idle();
         }
     });
 

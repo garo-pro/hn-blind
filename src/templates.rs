@@ -167,7 +167,7 @@ templates! {
         "Settings, {tab}. F1 for keys, Escape to close.",
         ["tab", "index", "count"];
     SettingsKeys, "settings_keys", Group::Settings, "Settings keys, spoken on F1",
-        "Tab or arrows move between controls. Control with Down or Up jumps to the next group. Left and right move through the text. Space or Enter toggles a checkbox. F5 restores this field's default. Escape closes and saves.",
+        "Up and Down move through the fields, and Left and Right collapse or open a group. Tab moves to the text of the selected field and back. Control with Tab switches tabs. F5 restores this field's default. Escape closes and saves.",
         ["tab", "index", "count"];
     SettingsGroupLabel, "settings_group", Group::Settings, "Settings group label",
         "{name}",
@@ -202,18 +202,6 @@ templates! {
     TemplateInvalid, "template_invalid", Group::Settings, "Template has a problem",
         "{name}: {problem}",
         ["name", "problem"];
-    EditCaret, "edit_caret", Group::Settings, "Character under the cursor",
-        "{char}",
-        ["char", "position", "count"];
-    EditDelete, "edit_delete", Group::Settings, "Character deleted",
-        "{char}",
-        ["char", "position", "count"];
-    EditEnd, "edit_end", Group::Settings, "Cursor at the end of a field",
-        "End",
-        ["count"];
-    EditSpace, "edit_space", Group::Settings, "Name of the space character",
-        "space",
-        [];
     EditBlank, "edit_blank", Group::Settings, "Empty field",
         "Blank",
         [];
@@ -222,9 +210,6 @@ templates! {
     MenuOpened, "menu_opened", Group::Menu, "Menu opened",
         "Menu opened. Escape to close.[ {label}]",
         ["label"];
-    MenuBarFocus, "menu_bar_focus", Group::Menu, "Menu, spoken on a top-level item",
-        "{name} menu, {index} of {count}",
-        ["name", "index", "count"];
     MenuItemFocus, "menu_item_focus", Group::Menu, "Menu item, spoken on focus",
         "{name}[, {state}], {index} of {count}",
         ["name", "state", "index", "count"];

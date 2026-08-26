@@ -617,8 +617,8 @@ mod tests {
     #[test]
     fn the_speech_toggle_reflects_speech_active() {
         let app = app_with_stories(1);
-        assert_eq!(app.command_marked(Command::ToggleSpeech, true), true);
-        assert_eq!(app.command_marked(Command::ToggleSpeech, false), false);
+        assert!(app.command_marked(Command::ToggleSpeech, true));
+        assert!(!app.command_marked(Command::ToggleSpeech, false));
     }
 
     #[test]
