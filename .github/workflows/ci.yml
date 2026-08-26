@@ -9,6 +9,10 @@ on:
 env:
   CARGO_TERM_COLOR: always
 
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build-and-test:
     strategy:
@@ -43,7 +47,8 @@ jobs:
             libwebkit2gtk-4.1-dev \
             libxtst-dev \
             libsm-dev \
-            libice-dev
+            libice-dev \
+            libspeechd-dev
 
       - name: Check
         run: cargo check --verbose

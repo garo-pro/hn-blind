@@ -62,7 +62,8 @@ jobs:
             libwebkit2gtk-4.1-dev \
             libxtst-dev \
             libsm-dev \
-            libice-dev
+            libice-dev \
+            libspeechd-dev
 
       - name: Build release binary
         run: cargo build --release --target ${{ matrix.target }}
