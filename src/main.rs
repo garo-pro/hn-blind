@@ -18,6 +18,7 @@ use std::sync::mpsc;
 use std::thread;
 
 use wxdragon::event::{IdleEvent, IdleMode, TextEventData, TreeEventData, WindowEvents};
+use wxdragon::menus::menu::MenuBuilder;
 use wxdragon::keycode::{WXK_DOWN, WXK_END, WXK_ESCAPE, WXK_F1, WXK_F5, WXK_HOME, WXK_PAGEDOWN, WXK_PAGEUP, WXK_UP};
 use wxdragon::prelude::*;
 use wxdragon::widgets::checkbox::CheckBoxEventData;
@@ -189,6 +190,7 @@ fn run() {
     bind_content_keys(&KeyTarget(gui.list), &gui);
     bind_content_keys(&gui.tree, &gui);
     bind_content_selection(&gui);
+    bind_context_menu(&gui);
     bind_worker_idle(&gui, worker_rx);
 
     sync_feed_labels(&gui);
@@ -751,6 +753,24 @@ fn bind_content_selection(gui: &Gui) {
     gui.tree.on_item_activated(move |_| activate(&g));
 }
 
+/// The row-relevant context menu: right-click, or the keyboard's Menu key /
+/// Shift+F10, either of which wxWidgets reports as `wxEVT_CONTEXT_MENU` on
+/// whichever of `list` or `tree` is focused. That event bubbles up to `panel`
+/// (their common wx parent) when neither handles it, so one binding here
+/// covers both controls without needing a copy per widget.
+fn bind_context_menu(gui: &Gui) {
+    let g = gui.clone();
+    gui.panel.on_context_menu(move |e: MenuEventData| {
+        let view = g.state.borrow().app.view;
+        if !matches!(view, View::Stories | View::Comments) {
+            e.skip(true);
+            return;
+        }
+        let mut menu = build_context_menu(&g.state.borrow().app);
+        g.panel.popup_menu(&mut menu, e.get_context_position());
+    });
+}
+
 // ---- The menu bar -----------------------------------------------------------
 
 /// Build the menu bar. Takes the application because one command — choosing
@@ -759,23 +779,43 @@ fn bind_content_selection(gui: &Gui) {
 fn build_menu_bar(app: &App) -> MenuBar {
     let mut builder = MenuBar::builder();
     for bar in menu::BARS {
-        let mut menu_builder = Menu::builder();
-        for item in bar.items {
-            menu_builder = match item {
-                MenuEntry::Separator => menu_builder.append_separator(),
-                MenuEntry::Entry(command) => {
-                    let label = app.command_label(*command);
-                    match command.kind() {
-                        Kind::Normal => menu_builder.append_item(command.id(), &label, ""),
-                        Kind::Checkbox => menu_builder.append_check_item(command.id(), &label, ""),
-                        Kind::Radio => menu_builder.append_radio_item(command.id(), &label, ""),
-                    }
-                }
-            };
-        }
+        let menu_builder = append_items(Menu::builder(), app, bar.items);
         builder = builder.append(menu_builder.build(), bar.name);
     }
     builder.build()
+}
+
+/// Append a menu's entries to a builder, wired to the same `Command` ids the
+/// menu bar and the keyboard use — shared so a popup menu built from the same
+/// items can never drift from the menu bar's own.
+fn append_items(mut builder: MenuBuilder, app: &App, items: &[MenuEntry]) -> MenuBuilder {
+    for item in items {
+        builder = match item {
+            MenuEntry::Separator => builder.append_separator(),
+            MenuEntry::Entry(command) => {
+                let label = app.command_label(*command);
+                match command.kind() {
+                    Kind::Normal => builder.append_item(command.id(), &label, ""),
+                    Kind::Checkbox => builder.append_check_item(command.id(), &label, ""),
+                    Kind::Radio => builder.append_radio_item(command.id(), &label, ""),
+                }
+            }
+        };
+    }
+    builder
+}
+
+/// The right-click / Menu-key context menu for the story and comment lists:
+/// the same "Story" commands the menu bar offers, reachable without leaving
+/// the row under the cursor. Built fresh each time so a user-edited feed
+/// template or other label change can never leave it stale.
+fn build_context_menu(app: &App) -> Menu {
+    let items = menu::BARS
+        .iter()
+        .find(|bar| bar.name == "Story")
+        .map(|bar| bar.items)
+        .unwrap_or(&[]);
+    append_items(Menu::builder(), app, items).build()
 }
 
 /// `SelectFeed`'s label is the feed's own user-editable name, so unlike
