@@ -58,3 +58,95 @@ jobs:
 
       - name: Test
         run: cargo test --verbose
+
+  static-link:
+    name: static link (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    # The release workflow builds with PRISM_STATIC=1, a materially different
+    # link path: Prism's own PRIVATE dependencies are replayed at our link, the
+    # archive is pulled in whole so its built-in backend registrars survive,
+    # and on Windows build.rs has to forward the screen-reader delay-load list.
+    # None of that is exercised by an ordinary build, so without this job a
+    # break only surfaces once a tag is pushed -- which is how v0.1.1 failed on
+    # all five targets.
+    env:
+      PRISM_STATIC: "1"
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2.9.2
+
+      - name: Install Linux build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            cmake \
+            libclang-dev \
+            pkg-config \
+            libgtk-3-dev \
+            libpng-dev \
+            libjpeg-dev \
+            libgl1-mesa-dev \
+            libglu1-mesa-dev \
+            libxkbcommon-dev \
+            libwayland-dev \
+            libexpat1-dev \
+            libtiff-dev \
+            libwebkit2gtk-4.1-dev \
+            libxtst-dev \
+            libsm-dev \
+            libice-dev \
+            libspeechd-dev
+
+      - name: Build + test against a statically linked Prism
+        run: |
+          cargo build --release --verbose
+          cargo test --verbose
+
+      - name: Verify the binary carries no dynamic Prism dependency
+        if: runner.os != 'Windows'
+        shell: bash
+        # A leftover DT_NEEDED/LC_LOAD_DYLIB on Prism means the archive did not
+        # actually get linked in. The binary would still start here and die in
+        # the loader on a machine without Prism installed -- silently, since
+        # this is a GUI app, so the user gets no error and no speech.
+        run: |
+          bin=target/release/hn-blind
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            deps=$(readelf -d "$bin" | grep NEEDED || true)
+          else
+            deps=$(otool -L "$bin" || true)
+          fi
+          if grep -qi prism <<<"$deps"; then
+            echo "::error::$bin still depends on a shared Prism:"
+            grep -i prism <<<"$deps"
+            exit 1
+          fi
+          echo "no shared Prism dependency"
+
+      - name: Verify the binary carries no dynamic Prism dependency
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $exe = "target/release/hn-blind.exe"
+          $text = [Text.Encoding]::ASCII.GetString([IO.File]::ReadAllBytes($exe))
+          if ($text.Contains("prism.dll")) {
+            Write-Output "::error::$exe still imports prism.dll"
+            exit 1
+          }
+          # The screen-reader DLLs must be present as delay-load entries; if
+          # build.rs stopped forwarding them the exe would not start at all.
+          foreach ($dll in "ZDSRAPI_x64.dll", "PCTKUSR.dll") {
+            if (-not $text.Contains($dll)) {
+              Write-Output "::error::$exe is missing the $dll delay-load entry"
+              exit 1
+            }
+          }
+          Write-Output "statically linked, screen-reader DLLs delay-loaded"
