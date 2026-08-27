@@ -1,0 +1,4 @@
+# Shell scripts run on Linux CI runners; a CRLF shebang would break them with
+# an unhelpful "bad interpreter" error. This repo is developed on Windows, so
+# pin the line endings rather than relying on each clone's autocrlf setting.
+*.sh text eol=lf

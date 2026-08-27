@@ -1,0 +1,14 @@
+name: Linux build dependencies
+description: >-
+  Install the system libraries hn-blind needs to build, on Linux runners only.
+  A no-op elsewhere, so it can be dropped into a cross-platform matrix job
+  without a guard at the call site.
+
+runs:
+  using: composite
+  steps:
+    - if: runner.os == 'Linux'
+      shell: bash
+      # The package list lives in the script so a developer setting up a Linux
+      # box can run the same thing by hand.
+      run: ${{ github.workspace }}/scripts/install-linux-deps.sh
