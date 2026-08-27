@@ -5,7 +5,8 @@ edition = "2024"
 
 [dependencies]
 open = "5.4.1"
-prism = { git = "https://github.com/garo-pro/prism2rust", version = "0.18.1" }
+prism = { git = "https://github.com/garo-pro/prism2rust", version = "0.18.2" }
+prism-sys = { git = "https://github.com/garo-pro/prism2rust", version = "0.18.2" }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 ureq = { version = "3.4.0", features = ["json"] }
