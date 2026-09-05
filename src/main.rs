@@ -284,6 +284,9 @@ fn populate_view(gui: &Gui) {
             gui.tree.show(false);
             gui.list.show(true);
             gui.list.delete_all_items();
+            // Hiding the tree does not empty it, so without this a thread the user has left stays in memory -- every native node with its label, plus our handles into them -- for as long as they browse elsewhere. Entering the comments view rebuilds the tree from `app.comments` regardless, so emptying it here only moves a delete that was going to happen anyway.
+            gui.tree.delete_all_items();
+            gui.state.borrow_mut().comment_items.clear();
             let count = gui.state.borrow().app.row_count();
             for i in 0..count {
                 let label = gui.state.borrow().app.row_label(i);

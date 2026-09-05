@@ -214,18 +214,16 @@ impl Client {
         let mut rows = Vec::new();
         let mut stack: Vec<(u64, usize)> = root_kids.iter().rev().map(|id| (*id, 0usize)).collect();
 
+        // Take each item out of the map rather than cloning it. Every id is reachable once, so the row can simply own the strings the map was holding; cloning instead would mean the whole thread existed twice at the moment it is largest, and comment bodies are the bulk of what this application keeps in memory. Taking also makes a repeated id skip on its second visit rather than duplicating a subtree.
         while let Some((id, depth)) = stack.pop() {
-            let Some(item) = by_id.get(&id) else { continue };
+            let Some(item) = by_id.remove(&id) else { continue };
             if !item.is_readable() {
                 continue;
             }
             for kid in item.kids.iter().rev() {
                 stack.push((*kid, depth + 1));
             }
-            rows.push(CommentRow {
-                item: item.clone(),
-                depth,
-            });
+            rows.push(CommentRow { item, depth });
         }
 
         rows
