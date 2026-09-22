@@ -73,7 +73,10 @@ jobs:
           choco install minisign -y --no-progress
           $keyPath = Join-Path $env:RUNNER_TEMP "hn-blind.key"
           $pwPath = Join-Path $env:RUNNER_TEMP "hn-blind.pw"
-          [IO.File]::WriteAllText($keyPath, $env:MINISIGN_KEY)
+          # A minisign key file is a comment line and then the key, and minisign will not read one without the comment. Pasting just the key line into the secret is an easy mistake, so the comment is put back rather than required.
+          $key = $env:MINISIGN_KEY.Trim()
+          if (-not $key.StartsWith("untrusted comment:")) { $key = "untrusted comment: hn-blind release signing key`n$key" }
+          [IO.File]::WriteAllText($keyPath, "$key`n")
           [IO.File]::WriteAllText($pwPath, $env:MINISIGN_PASSWORD)
           try {
             Get-Content $pwPath | minisign -S -s $keyPath -m ${{ matrix.asset_name }}
