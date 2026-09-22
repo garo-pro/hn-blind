@@ -248,6 +248,9 @@ templates! {
     StatusHelp, "status_help", Group::Status, "Entering help",
         "Keyboard help. Output: {output}",
         ["output", "count"];
+    StatusUpdateUnsupported, "status_update_unsupported", Group::Status, "Updating is not available on this system",
+        "hn-blind can only update itself on Windows. New versions are on its GitHub releases page.",
+        [];
 
     // ---- Window title ----------------------------------------------------
     WindowTitle, "window_title", Group::Window, "Window title",

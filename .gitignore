@@ -1,2 +1,5 @@
 /target
 .claude-notes/
+
+# The release-signing secret key. It belongs in the MINISIGN_KEY Actions secret and nowhere in this repository; the public half is compiled into src/update.rs.
+*.key

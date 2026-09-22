@@ -50,6 +50,7 @@ cargo run --example preview -- templates
 | Alt | Open the menu bar, a second way to reach every command |
 | , | Settings |
 | H / F1 | Keyboard help |
+| U | Check for a new version, and install it if you choose (Windows) |
 | Q | Quit |
 
 The key map is also the in-app help view (`H`), so it is discoverable without reading this file. Every command is also on the menu bar, for anyone who does not already know the letters by heart; the menu and the key run the same code, so the two cannot drift apart.
@@ -125,6 +126,7 @@ The editor itself is an ordinary multi-line text control, so the caret, the sele
 | `src/menu.rs` | Which command sits under which menu entry, and its stable id |
 | `src/app.rs` | Application state, and which template describes it |
 | `src/speech.rs` | Prism backend lifecycle and the screen-reader/TTS distinction |
+| `src/update.rs` | Windows only: configuring [ship-shape](https://github.com/trypsynth/ship-shape), which finds, downloads, signature-checks and installs a new release with its own dialogs |
 | `src/main.rs` | Every widget: the window, its controls, the key map, the menu bar, the settings dialog, and the network worker thread |
 
 Only `main.rs` links against wxWidgets. Everything else is plain data and wording, which is why the API client, the HTML conversion and every phrase this application can say have unit tests and the window does not need one.
@@ -135,4 +137,5 @@ Network work runs on a worker thread and reports its results back through a chan
 
 - Feeds load the first 50 stories; a comment thread loads up to 400 comments, fetched a level at a time so each level's requests run in parallel.
 - Read-only. There is no login, voting, or posting.
+- Updating from inside the application works on Windows only, where a release is a zip that can be unpacked over the running executable once it has closed. The folder hn-blind runs from has to be writable for that, so it will not work from somewhere like Program Files. A download is installed only if its minisign signature verifies against the key built into the application.
 - The window mirrors the current position in its title bar and the latest status message in its status bar, so a sighted person looking over your shoulder can follow along.

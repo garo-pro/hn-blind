@@ -17,6 +17,7 @@ pub enum Command {
     ToggleSpeech,
     OpenSettings,
     OpenHelp,
+    CheckForUpdates,
     Quit,
 }
 
@@ -40,6 +41,7 @@ const ID_TOGGLE_SPEECH: i32 = 206;
 const ID_OPEN_SETTINGS: i32 = 207;
 const ID_OPEN_HELP: i32 = 208;
 const ID_QUIT: i32 = 209;
+const ID_CHECK_FOR_UPDATES: i32 = 210;
 
 impl Command {
     /// The label for commands whose wording is not user-editable. `None` for `SelectFeed`, whose text is a template (see `Templates::feed_title`) like every other user-facing word in this application.
@@ -55,6 +57,7 @@ impl Command {
             Command::ToggleSpeech => Some("Prism Speech"),
             Command::OpenSettings => Some("Settings"),
             Command::OpenHelp => Some("Keyboard Help"),
+            Command::CheckForUpdates => Some("Check for Updates"),
             Command::Quit => Some("Quit"),
         }
     }
@@ -83,6 +86,7 @@ impl Command {
             Command::ToggleSpeech => ID_TOGGLE_SPEECH,
             Command::OpenSettings => ID_OPEN_SETTINGS,
             Command::OpenHelp => ID_OPEN_HELP,
+            Command::CheckForUpdates => ID_CHECK_FOR_UPDATES,
             Command::Quit => ID_QUIT,
         }
     }
@@ -102,6 +106,7 @@ impl Command {
             ID_TOGGLE_SPEECH => Command::ToggleSpeech,
             ID_OPEN_SETTINGS => Command::OpenSettings,
             ID_OPEN_HELP => Command::OpenHelp,
+            ID_CHECK_FOR_UPDATES => Command::CheckForUpdates,
             ID_QUIT => Command::Quit,
             _ => return None,
         })
@@ -178,6 +183,7 @@ pub const BARS: &[Bar] = &[
         items: &[
             Item::Entry(Command::OpenSettings),
             Item::Entry(Command::OpenHelp),
+            Item::Entry(Command::CheckForUpdates),
             Item::Separator,
             Item::Entry(Command::Quit),
         ],
@@ -209,6 +215,6 @@ mod tests {
         // Reload sits after a separator, which nothing focuses, so it is the seventh entry of the Feed menu rather than the eighth.
         assert_eq!(position_of(Command::Reload), Some((7, 7)));
         assert_eq!(position_of(Command::SelectFeed(Feed::Top)), Some((1, 7)));
-        assert_eq!(position_of(Command::Quit), Some((3, 3)));
+        assert_eq!(position_of(Command::Quit), Some((4, 4)));
     }
 }

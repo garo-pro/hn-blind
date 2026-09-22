@@ -61,10 +61,32 @@ jobs:
         run: |
           Compress-Archive -Path target/${{ matrix.target }}/release/hn-blind.exe -DestinationPath ${{ matrix.asset_name }}
 
+      # The in-app updater (src/update.rs) installs only a zip whose .minisig verifies against the public key compiled into it, so an unsigned Windows release would be one no existing user could update to. Fail rather than publish that.
+      - name: Sign (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          MINISIGN_KEY: ${{ secrets.MINISIGN_KEY }}
+          MINISIGN_PASSWORD: ${{ secrets.MINISIGN_PASSWORD }}
+        run: |
+          if (-not $env:MINISIGN_KEY) { throw "The MINISIGN_KEY secret is not set; the updater cannot install an unsigned release." }
+          choco install minisign -y --no-progress
+          $keyPath = Join-Path $env:RUNNER_TEMP "hn-blind.key"
+          $pwPath = Join-Path $env:RUNNER_TEMP "hn-blind.pw"
+          [IO.File]::WriteAllText($keyPath, $env:MINISIGN_KEY)
+          [IO.File]::WriteAllText($pwPath, $env:MINISIGN_PASSWORD)
+          try {
+            Get-Content $pwPath | minisign -S -s $keyPath -m ${{ matrix.asset_name }}
+            if ($LASTEXITCODE -ne 0) { throw "minisign failed with exit code $LASTEXITCODE" }
+          } finally {
+            Remove-Item $keyPath, $pwPath
+          }
+
       - uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.asset_name }}
-          path: ${{ matrix.asset_name }}
+          # The glob also picks up the Windows zip's .minisig beside it.
+          path: ${{ matrix.asset_name }}*
 
   release:
     needs: build

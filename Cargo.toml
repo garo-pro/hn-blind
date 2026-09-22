@@ -11,3 +11,7 @@ serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 ureq = { version = "3.4.0", features = ["json"] }
 wxdragon = "0.9.20"
+
+# In-place updating from GitHub releases. Windows only: the other platforms ship tarballs, which ship-shape cannot install. See `src/update.rs`.
+[target.'cfg(windows)'.dependencies]
+ship-shape = "0.2.0"

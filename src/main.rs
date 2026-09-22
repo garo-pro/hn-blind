@@ -30,6 +30,9 @@ use hn_blind::settings::{Field, TABS, fields_of, groups};
 use hn_blind::speech::Speaker;
 use hn_blind::templates::{Template, validate};
 
+#[cfg(windows)]
+mod update;
+
 /// How many stories to pull per feed. HN's lists run to 500; a few screens' worth is what anyone actually reads.
 const STORY_LIMIT: usize = 50;
 /// Upper bound on comments fetched for one story, to keep big threads snappy.
@@ -641,6 +644,18 @@ fn reload(gui: &Gui) {
     load_feed(gui, feed);
 }
 
+/// ship-shape's own dialogs take it from here — the release notes, the progress, and any error — and a screen reader reads them like any other dialog. See `update.rs`.
+#[cfg(windows)]
+fn check_for_updates(gui: &Gui) {
+    update::check(&gui.frame);
+}
+
+#[cfg(not(windows))]
+fn check_for_updates(gui: &Gui) {
+    let status = gui.state.borrow().app.text(Template::StatusUpdateUnsupported, &[]);
+    set_status(gui, status);
+}
+
 fn toggle_speech(gui: &Gui) {
     let status = {
         let mut s = gui.state.borrow_mut();
@@ -677,6 +692,7 @@ fn run_command(gui: &Gui, command: Command) {
         Command::ToggleSpeech => toggle_speech(gui),
         Command::OpenSettings => open_settings(gui),
         Command::OpenHelp => toggle_help(gui),
+        Command::CheckForUpdates => check_for_updates(gui),
         Command::Quit => gui.frame.close(true),
     }
 }
@@ -756,6 +772,7 @@ fn handle_char(gui: &Gui, ch: char) -> bool {
         'v' | 'V' => toggle_speech(gui),
         ',' => open_settings(gui),
         'h' | 'H' => toggle_help(gui),
+        'u' | 'U' => check_for_updates(gui),
         'q' | 'Q' => gui.frame.close(true),
         _ => return false,
     }

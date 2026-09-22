@@ -45,6 +45,7 @@ pub const HELP: &[(&str, &str)] = &[
         "settings, where the wording of every announcement and other preferences are set",
     ),
     ("H or F1", "this help"),
+    ("U", "check for a new version of hn-blind, and install it if you choose"),
     ("Q", "quit"),
 ];
 
