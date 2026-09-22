@@ -70,7 +70,12 @@ jobs:
           MINISIGN_PASSWORD: ${{ secrets.MINISIGN_PASSWORD }}
         run: |
           if (-not $env:MINISIGN_KEY) { throw "The MINISIGN_KEY secret is not set; the updater cannot install an unsigned release." }
-          choco install minisign -y --no-progress
+          # The official 0.12 build, pinned by hash. Chocolatey's package is still minisign 0.8 from 2018, older than the minisign the key was made with.
+          $zip = Join-Path $env:RUNNER_TEMP "minisign.zip"
+          Invoke-WebRequest https://github.com/jedisct1/minisign/releases/download/0.12/minisign-0.12-win64.zip -OutFile $zip
+          if ((Get-FileHash $zip -Algorithm SHA256).Hash -ne "37B600344E20C19314B2E82813DB2BFDCC408B77B876F7727889DBD46D539479") { throw "The minisign download does not match its pinned hash." }
+          Expand-Archive $zip -DestinationPath $env:RUNNER_TEMP
+          $minisign = Join-Path $env:RUNNER_TEMP "minisign-win64/x86_64/minisign.exe"
           $keyPath = Join-Path $env:RUNNER_TEMP "hn-blind.key"
           $pwPath = Join-Path $env:RUNNER_TEMP "hn-blind.pw"
           # A minisign key file is a comment line and then the key, and minisign will not read one without the comment. Pasting just the key line into the secret is an easy mistake, so the comment is put back rather than required.
@@ -79,7 +84,7 @@ jobs:
           [IO.File]::WriteAllText($keyPath, "$key`n")
           [IO.File]::WriteAllText($pwPath, $env:MINISIGN_PASSWORD)
           try {
-            Get-Content $pwPath | minisign -S -s $keyPath -m ${{ matrix.asset_name }}
+            Get-Content $pwPath | & $minisign -S -s $keyPath -m ${{ matrix.asset_name }}
             if ($LASTEXITCODE -ne 0) { throw "minisign failed with exit code $LASTEXITCODE" }
           } finally {
             Remove-Item $keyPath, $pwPath
