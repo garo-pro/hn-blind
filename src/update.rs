@@ -18,7 +18,7 @@ const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 const GITHUB_REPO: &str = "garo-pro/hn-blind";
 
 /// The public half of the key the release workflow signs the Windows zip with (the `MINISIGN_KEY` secret). A download that does not verify against it is deleted, never unpacked, so this line is what stands between a compromised release and every user's machine — change it only together with that secret.
-const MINISIGN_PUBLIC_KEY: &str = "RWRVbyhi88EhsvAa0JMj+GEuPONOfxYYdh0wRg6jwQuTPOh1p5jRO2Y1";
+const MINISIGN_PUBLIC_KEY: &str = "RWRMdwNGi4KYZEDEtn+bnjgM6ZDCemzo1TKkEdaEqhvzXFnFp+pjJXpE";
 
 /// The release workflow names each asset after its platform, and this is the part ship-shape inserts between `hn-blind` and `.zip` to find the one for this build. There is no aarch64 Windows release yet; asking for one anyway gets an honest "no matching download" rather than the x86_64 zip, which would not run.
 #[cfg(target_arch = "aarch64")]
