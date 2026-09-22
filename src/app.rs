@@ -48,6 +48,16 @@ pub const HELP: &[(&str, &str)] = &[
     ("Q", "quit"),
 ];
 
+/// A comment thread the user has left, with where they were in it.
+struct ClosedThread {
+    story_id: u64,
+    /// HN's comment count for the story when the thread was fetched, which is how a kept thread is known to be stale.
+    descendants: Option<i64>,
+    comments: Vec<CommentRow>,
+    cursor: usize,
+    collapsed: HashSet<usize>,
+}
+
 /// Arguments for a template, owned because most of them are freshly formatted.
 type Args = Vec<(&'static str, String)>;
 
@@ -68,6 +78,8 @@ pub struct App {
     pub comment_collapsed: HashSet<usize>,
     /// The story whose thread is loaded, so the comments view can title itself.
     pub comment_story: Option<Item>,
+    /// The last thread the user left, kept so that going straight back into it is instant. See [`App::close_thread`].
+    closed_thread: Option<ClosedThread>,
     pub view: View,
     /// The view to return to when leaving help or settings.
     pub previous_view: View,
@@ -90,6 +102,7 @@ impl App {
             comment_cursor: 0,
             comment_collapsed: HashSet::new(),
             comment_story: None,
+            closed_thread: None,
             view: View::Stories,
             previous_view: View::Stories,
             status: templates.render(Template::StatusStarting, &[]),
@@ -217,6 +230,45 @@ impl App {
     /// Forget which threads were collapsed. Called when the thread itself changes, since the indices are only meaningful against one `comments`.
     pub fn clear_comment_collapsed(&mut self) {
         self.comment_collapsed.clear();
+    }
+
+    /// Leave the open thread, keeping it in memory in case the user goes straight back in.
+    ///
+    /// Stepping out to the story list and back in is how a thread gets re-read or checked against the headline, and refetching it costs hundreds of requests. Only the one thread is kept, and [`App::reopen_thread`] gives it up whenever a different one is opened, so at most one thread is ever held, the same as while reading it. The cursor and collapsed replies come back too: returning to where you were is the point, and indices into the same rows are still valid.
+    pub fn close_thread(&mut self) {
+        let comments = std::mem::take(&mut self.comments);
+        let collapsed = std::mem::take(&mut self.comment_collapsed);
+        let cursor = std::mem::replace(&mut self.comment_cursor, 0);
+        self.closed_thread = self
+            .comment_story
+            .take()
+            .filter(|_| !comments.is_empty())
+            .map(|story| ClosedThread {
+                story_id: story.id,
+                descendants: story.descendants,
+                comments,
+                cursor,
+                collapsed,
+            });
+    }
+
+    /// Reopen the thread [`App::close_thread`] kept, if it is this story's and still current. Returns whether it did; if not, the kept thread is dropped either way, since the caller is about to load another one.
+    ///
+    /// "Still current" means HN reports the same comment count it did when the thread was fetched. That is only as fresh as the story list, so reloading the feed is what lets a thread that has grown be fetched again.
+    pub fn reopen_thread(&mut self, story: &Item) -> bool {
+        let Some(closed) = self.closed_thread.take() else {
+            return false;
+        };
+        if closed.story_id != story.id || closed.descendants != story.descendants {
+            return false;
+        }
+        self.comments = closed.comments;
+        self.comment_cursor = closed.cursor;
+        self.comment_collapsed = closed.collapsed;
+        // The story list's copy rather than the kept one: its score and age may have moved on even though its thread has not.
+        self.comment_story = Some(story.clone());
+        self.view = View::Comments;
+        true
     }
 
     fn set_cursor(&mut self, index: usize) {
@@ -766,6 +818,48 @@ mod tests {
             })
             .collect();
         app
+    }
+
+    /// `app_with_comments`, opened from a story with id 100.
+    fn app_in_thread(depths: &[usize]) -> (App, Item) {
+        let mut app = app_with_comments(depths);
+        let opened = story(100, "Thread");
+        app.comment_story = Some(opened.clone());
+        (app, opened)
+    }
+
+    #[test]
+    fn going_back_into_the_thread_just_left_returns_to_where_the_reader_was() {
+        let (mut app, opened) = app_in_thread(&[0, 1, 0, 1]);
+        app.set_comment_collapsed(0, true);
+        app.comment_cursor = 2;
+
+        app.close_thread();
+        app.view = View::Stories;
+        assert!(app.comments.is_empty(), "nothing is showing, so nothing is loaded");
+
+        assert!(app.reopen_thread(&opened));
+        assert_eq!(app.view, View::Comments);
+        assert_eq!(app.comments.len(), 4);
+        assert_eq!(app.cursor(), 2);
+        assert!(app.comment_is_collapsed(0));
+    }
+
+    #[test]
+    fn a_thread_that_has_grown_since_is_fetched_again() {
+        let (mut app, mut opened) = app_in_thread(&[0, 0]);
+        app.close_thread();
+        opened.descendants = Some(8);
+        assert!(!app.reopen_thread(&opened));
+        assert!(app.comments.is_empty());
+    }
+
+    #[test]
+    fn opening_another_thread_lets_go_of_the_kept_one() {
+        let (mut app, opened) = app_in_thread(&[0, 0]);
+        app.close_thread();
+        assert!(!app.reopen_thread(&story(101, "Another")));
+        assert!(!app.reopen_thread(&opened), "only one thread is ever held");
     }
 
     #[test]

@@ -424,6 +424,26 @@ fn open_comments(gui: &Gui) {
         return;
     }
 
+    let reopened = {
+        let mut s = gui.state.borrow_mut();
+        let reopened = s.app.reopen_thread(&story);
+        if reopened {
+            // Anything still in flight was asked for before this, and must not replace the thread the user is now reading.
+            s.generation += 1;
+            s.app.loading = false;
+        }
+        reopened
+    };
+    if reopened {
+        let status = {
+            let s = gui.state.borrow();
+            let count = s.app.comments.len();
+            s.app.text(Template::StatusCommentsLoaded, &[("count", &count.to_string()), ("title", &title)])
+        };
+        enter_view(gui, status);
+        return;
+    }
+
     let status = {
         let mut s = gui.state.borrow_mut();
         s.generation += 1;
@@ -458,10 +478,7 @@ fn go_back(gui: &Gui) {
             let title = {
                 let mut s = gui.state.borrow_mut();
                 s.app.view = View::Stories;
-                s.app.comments.clear();
-                s.app.comment_cursor = 0;
-                s.app.clear_comment_collapsed();
-                s.app.comment_story = None;
+                s.app.close_thread();
                 s.app.list_title()
             };
             enter_view(gui, title);
@@ -1316,6 +1333,10 @@ fn apply_result(gui: &Gui, result: WorkResult) {
                     let count = stories.len();
                     {
                         let mut s = gui.state.borrow_mut();
+                        // Reloading from inside a thread lands on the story list, so the thread is left the same way Escape leaves it. Without this its rows stayed in `app.comments`, unseen, until the next thread replaced them.
+                        if !s.app.comments.is_empty() {
+                            s.app.close_thread();
+                        }
                         s.app.stories = stories;
                         s.app.story_cursor = 0;
                         s.app.view = View::Stories;
