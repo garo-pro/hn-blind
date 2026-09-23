@@ -932,7 +932,7 @@ dependencies = [
 [[package]]
 name = "prism"
 version = "0.18.2"
-source = "git+https://github.com/garo-pro/prism2rust#62672f69a2577f3484ca3a86859af733453458a1"
+source = "git+https://github.com/garo-pro/prism2rust#c6f0a24e5c7183a808f2f71cce4790d417f7bb76"
 dependencies = [
  "libc",
  "prism-sys",
@@ -942,7 +942,7 @@ dependencies = [
 [[package]]
 name = "prism-sys"
 version = "0.18.2"
-source = "git+https://github.com/garo-pro/prism2rust#62672f69a2577f3484ca3a86859af733453458a1"
+source = "git+https://github.com/garo-pro/prism2rust#c6f0a24e5c7183a808f2f71cce4790d417f7bb76"
 dependencies = [
  "cmake",
  "libc",
@@ -952,7 +952,7 @@ dependencies = [
 [[package]]
 name = "prism-types"
 version = "0.18.2"
-source = "git+https://github.com/garo-pro/prism2rust#62672f69a2577f3484ca3a86859af733453458a1"
+source = "git+https://github.com/garo-pro/prism2rust#c6f0a24e5c7183a808f2f71cce4790d417f7bb76"
 dependencies = [
  "bitflags",
 ]
