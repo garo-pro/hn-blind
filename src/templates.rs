@@ -24,8 +24,10 @@ pub enum Group {
     Window,
     Time,
     Words,
-    /// Preferences that are not wording at all, such as what Escape does at the story list. Its one field lives in `settings::Field::EscapeExits` rather than in the template table below, since it has no text to edit.
+    /// Preferences that are not wording at all, such as what Escape does at the story list. Its fields are `settings::Field::Toggle`s rather than entries in the template table below, since they have no text to edit.
     General,
+    /// When to look for a new version and which builds count as one. Toggles too, like `General`.
+    Updates,
     Menu,
 }
 
@@ -41,6 +43,7 @@ impl Group {
             Group::Time => "Times",
             Group::Words => "Individual words",
             Group::General => "General",
+            Group::Updates => "Updates",
             Group::Menu => "Menu bar",
         }
     }

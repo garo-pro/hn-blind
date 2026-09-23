@@ -1,7 +1,8 @@
 //! The settings dialog's data: its tabs, its fields, and their grouping.
 //!
-//! The dialog itself is a real `wxDialog` (built in `main.rs`) with a `Notebook` of tabs, and each tab a `TreeCtrl` (one parent node per [`Group`], the group's fields as children) next to a single `TextCtrl` — or, for the one non-text field, a `CheckBox` — that edits whichever field is currently selected in the tree. Typing, the caret, and backspace/delete are the native `TextCtrl`'s job now; what stays here is knowing which fields exist, which tab and group they belong to, and which one is currently selected, so `app.rs` can turn that into wording and `main.rs` can turn it into tree nodes.
+//! The dialog itself is a real `wxDialog` (built in `main.rs`) with a `Notebook` of tabs, and each tab a `TreeCtrl` (one parent node per [`Group`], the group's fields as children) next to a single `TextCtrl` — or, for an on/off preference, a `CheckBox` — that edits whichever field is currently selected in the tree. Typing, the caret, and backspace/delete are the native `TextCtrl`'s job now; what stays here is knowing which fields exist, which tab and group they belong to, and which one is currently selected, so `app.rs` can turn that into wording and `main.rs` can turn it into tree nodes.
 
+use crate::preferences::Toggle;
 use crate::templates::{Group, Template, Templates};
 
 /// A tab in the dialog.
@@ -12,27 +13,27 @@ pub struct Tab {
 pub const TABS: &[Tab] = &[Tab { name: "Templates" }, Tab { name: "General" }];
 
 /// A control in the settings dialog: a template's editable text, or a checkbox for a preference that has no text at all.
-///
-/// Only one checkbox exists today, so it is named directly rather than wrapped in a generic "toggle id" — that generality can be added the day a second one shows up.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Field {
     Template(Template),
-    /// Whether Escape, pressed at the story list, quits the application.
-    EscapeExits,
+    Toggle(Toggle),
 }
 
 impl Field {
     pub fn group(self) -> Group {
         match self {
             Field::Template(template) => template.group(),
-            Field::EscapeExits => Group::General,
+            Field::Toggle(Toggle::EscapeExits) => Group::General,
+            Field::Toggle(Toggle::CheckForUpdatesOnStartup | Toggle::DevUpdates) => Group::Updates,
         }
     }
 
     pub fn label(self) -> &'static str {
         match self {
             Field::Template(template) => template.label(),
-            Field::EscapeExits => "Escape quits the application from the story list",
+            Field::Toggle(Toggle::EscapeExits) => "Escape quits the application from the story list",
+            Field::Toggle(Toggle::CheckForUpdatesOnStartup) => "Check for updates when the application starts",
+            Field::Toggle(Toggle::DevUpdates) => "Update to development builds of every change instead of releases",
         }
     }
 }
@@ -80,11 +81,13 @@ impl Settings {
         self.fields().get(self.selected?).copied()
     }
 
-    /// Whether the selected control is a checkbox, which is toggled rather than typed into.
-    pub fn is_toggle(&self) -> bool {
-        matches!(self.focused_field(), Some(Field::EscapeExits))
+    /// The selected control's preference, when it is a checkbox, which is toggled rather than typed into.
+    pub fn focused_toggle(&self) -> Option<Toggle> {
+        match self.focused_field()? {
+            Field::Toggle(toggle) => Some(toggle),
+            Field::Template(_) => None,
+        }
     }
-
 
     /// Select a field of the active tab, in response to the tree control's own selection-changed event.
     pub fn select_field(&mut self, index: usize) -> bool {
@@ -105,7 +108,7 @@ impl Settings {
         true
     }
 
-    /// Restore the selected field to its compiled-in default. A no-op on the checkbox, which has no text to restore.
+    /// Restore the selected field to its compiled-in default. A no-op on a checkbox, which has no text to restore.
     pub fn reset_field(&mut self, templates: &mut Templates) -> Option<Template> {
         let Field::Template(template) = self.focused_field()? else {
             return None;
@@ -119,7 +122,13 @@ impl Settings {
 pub fn fields_of(tab: usize) -> Vec<Field> {
     match tab {
         0 => Template::ALL.iter().copied().map(Field::Template).collect(),
-        _ => vec![Field::EscapeExits],
+        _ => Toggle::ALL
+            .iter()
+            .copied()
+            // Updating in place is Windows-only (see `update.rs` in the binary), and a switch that does nothing is worse than no switch.
+            .filter(|toggle| cfg!(windows) || *toggle == Toggle::EscapeExits)
+            .map(Field::Toggle)
+            .collect(),
     }
 }
 
@@ -161,7 +170,7 @@ mod tests {
         settings.select_field(0);
         assert!(settings.select_tab(1));
         assert_eq!(settings.focused_field(), None);
-        assert_eq!(settings.fields(), vec![Field::EscapeExits]);
+        assert_eq!(settings.fields()[0], Field::Toggle(Toggle::EscapeExits));
         assert!(!settings.select_tab(1), "already on that tab");
         assert!(!settings.select_tab(TABS.len()), "out of range");
     }
@@ -180,11 +189,14 @@ mod tests {
     }
 
     #[test]
-    fn the_general_tab_holds_the_checkbox() {
+    fn the_general_tab_holds_the_checkboxes() {
         let mut settings = Settings::new();
         settings.select_tab(1);
         settings.select_field(0);
-        assert!(settings.is_toggle());
+        assert_eq!(settings.focused_toggle(), Some(Toggle::EscapeExits));
+        let fields = settings.fields();
+        let grouped = groups(&fields);
+        assert_eq!(grouped.last().unwrap().1.end, fields.len(), "every checkbox is in a group");
     }
 
     #[test]

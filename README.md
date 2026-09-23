@@ -95,7 +95,7 @@ Edits are written to `%APPDATA%\hn-blind\templates.json` (on Linux, `$XDG_CONFIG
 
 ## The settings dialog
 
-`,` opens a real modal dialog: a notebook of tabs, and in each tab a tree of the fields on the left next to the editor for whichever one is selected. The Templates tab holds one field per phrase; the General tab holds the switches that are not phrases at all, of which there is currently one — whether Escape quits from the story list.
+`,` opens a real modal dialog: a notebook of tabs, and in each tab a tree of the fields on the left next to the editor for whichever one is selected. The Templates tab holds one field per phrase; the General tab holds the switches that are not phrases at all — whether Escape quits from the story list and, on Windows, whether to check for updates at startup and whether to take development builds.
 
 Everything in it is the platform's own dialog navigation, which is the point of building it out of real controls:
 
@@ -126,7 +126,7 @@ The editor itself is an ordinary multi-line text control, so the caret, the sele
 | `src/menu.rs` | Which command sits under which menu entry, and its stable id |
 | `src/app.rs` | Application state, and which template describes it |
 | `src/speech.rs` | Prism backend lifecycle and the screen-reader/TTS distinction |
-| `src/update.rs` | Windows only: configuring [ship-shape](https://github.com/trypsynth/ship-shape), which finds, downloads, signature-checks and installs a new release with its own dialogs |
+| `src/update.rs` | Windows only: configuring [ship-shape](https://github.com/trypsynth/ship-shape), which finds, downloads, signature-checks and installs a new release or development build with its own dialogs |
 | `src/main.rs` | Every widget: the window, its controls, the key map, the menu bar, the settings dialog, and the network worker thread |
 
 Only `main.rs` links against wxWidgets. Everything else is plain data and wording, which is why the API client, the HTML conversion and every phrase this application can say have unit tests and the window does not need one.
@@ -138,4 +138,6 @@ Network work runs on a worker thread and reports its results back through a chan
 - Feeds load the first 50 stories; a comment thread loads up to 400 comments, fetched a level at a time so each level's requests run in parallel.
 - Read-only. There is no login, voting, or posting.
 - Updating from inside the application works on Windows only, where a release is a zip that can be unpacked over the running executable once it has closed. The folder hn-blind runs from has to be writable for that, so it will not work from somewhere like Program Files. A download is installed only if its minisign signature verifies against the key built into the application.
+- By default hn-blind checks for a new version each time it starts, and says nothing unless there is one. Turn that off on the General tab of settings; `U` checks by hand either way.
+- There are two update channels. Releases are the tagged versions. Development builds are rebuilt from every push to main and published as the rolling `latest` pre-release; turning on "Update to development builds" in settings follows those instead, offering each new commit with the list of changes since the one you are running. A development build downloaded directly already defaults to that channel.
 - The window mirrors the current position in its title bar and the latest status message in its status bar, so a sighted person looking over your shoulder can follow along.

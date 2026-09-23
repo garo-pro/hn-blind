@@ -610,7 +610,7 @@ impl App {
         )
     }
 
-    /// A field's current value as spoken text, and its placeholder list — empty for the checkbox, which takes no placeholders.
+    /// A field's current value as spoken text, and its placeholder list — empty for a checkbox, which takes no placeholders.
     pub fn field_value_and_placeholders(&self, field: Field) -> (String, String) {
         match field {
             Field::Template(template) => {
@@ -622,8 +622,8 @@ impl App {
                 };
                 (value, template.placeholders().join(", "))
             }
-            Field::EscapeExits => {
-                let word = if self.preferences.escape_exits {
+            Field::Toggle(toggle) => {
+                let word = if self.preferences.get(toggle) {
                     Template::WordOn
                 } else {
                     Template::WordOff
@@ -652,10 +652,10 @@ impl App {
                 !self.templates.is_default(template),
                 template.default_text().to_string(),
             ),
-            Field::EscapeExits => (
+            Field::Toggle(toggle) => (
                 String::new(),
-                self.preferences.escape_exits,
-                self.text(Template::WordOff, &[]),
+                self.preferences.get(toggle) != toggle.default_value(),
+                self.text(if toggle.default_value() { Template::WordOn } else { Template::WordOff }, &[]),
             ),
         };
         let changed = if changed {

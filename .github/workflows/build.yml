@@ -1,0 +1,100 @@
+name: Build
+
+# The build matrix shared by the tagged release and the rolling development build, so the two cannot drift apart: whatever the dev channel hands a user is built, packaged and signed exactly as a release would be.
+on:
+  workflow_call:
+    inputs:
+      channel:
+        description: The update channel stamped into the binary (see build.rs); empty for a tagged release.
+        type: string
+        default: ""
+
+env:
+  CARGO_TERM_COLOR: always
+  PRISM_STATIC: "1"
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            asset_name: hn-blind-linux-x86_64.tar.gz
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            asset_name: hn-blind-linux-aarch64.tar.gz
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            asset_name: hn-blind-windows-x86_64.zip
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            asset_name: hn-blind-macos-aarch64.tar.gz
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            asset_name: hn-blind-macos-x86_64.tar.gz
+    runs-on: ${{ matrix.os }}
+    env:
+      HN_BLIND_CHANNEL: ${{ inputs.channel }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2.9.2
+
+      - uses: ./.github/actions/linux-build-deps
+
+      - name: Build release binary
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Package (Unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          cd target/${{ matrix.target }}/release
+          tar czf ${{ github.workspace }}/${{ matrix.asset_name }} hn-blind
+
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Compress-Archive -Path target/${{ matrix.target }}/release/hn-blind.exe -DestinationPath ${{ matrix.asset_name }}
+
+      # The in-app updater (src/update.rs) installs only a zip whose .minisig verifies against the public key compiled into it, so an unsigned Windows release would be one no existing user could update to. Fail rather than publish that.
+      - name: Sign (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          MINISIGN_KEY: ${{ secrets.MINISIGN_KEY }}
+          MINISIGN_PASSWORD: ${{ secrets.MINISIGN_PASSWORD }}
+        run: |
+          if (-not $env:MINISIGN_KEY) { throw "The MINISIGN_KEY secret is not set; the updater cannot install an unsigned release." }
+          # The official 0.12 build, pinned by hash. Chocolatey's package is still minisign 0.8 from 2018, older than the minisign the key was made with.
+          $zip = Join-Path $env:RUNNER_TEMP "minisign.zip"
+          Invoke-WebRequest https://github.com/jedisct1/minisign/releases/download/0.12/minisign-0.12-win64.zip -OutFile $zip
+          if ((Get-FileHash $zip -Algorithm SHA256).Hash -ne "37B600344E20C19314B2E82813DB2BFDCC408B77B876F7727889DBD46D539479") { throw "The minisign download does not match its pinned hash." }
+          Expand-Archive $zip -DestinationPath $env:RUNNER_TEMP
+          $minisign = Join-Path $env:RUNNER_TEMP "minisign-win64/x86_64/minisign.exe"
+          $keyPath = Join-Path $env:RUNNER_TEMP "hn-blind.key"
+          $pwPath = Join-Path $env:RUNNER_TEMP "hn-blind.pw"
+          # A minisign key file is a comment line and then the key, and minisign will not read one without the comment. Pasting just the key line into the secret is an easy mistake, so the comment is put back rather than required.
+          $key = $env:MINISIGN_KEY.Trim()
+          if (-not $key.StartsWith("untrusted comment:")) { $key = "untrusted comment: hn-blind release signing key`n$key" }
+          [IO.File]::WriteAllText($keyPath, "$key`n")
+          [IO.File]::WriteAllText($pwPath, $env:MINISIGN_PASSWORD)
+          try {
+            Get-Content $pwPath | & $minisign -S -s $keyPath -m ${{ matrix.asset_name }}
+            if ($LASTEXITCODE -ne 0) { throw "minisign failed with exit code $LASTEXITCODE" }
+          } finally {
+            Remove-Item $keyPath, $pwPath
+          }
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.asset_name }}
+          # The glob also picks up the Windows zip's .minisig beside it.
+          path: ${{ matrix.asset_name }}*

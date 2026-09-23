@@ -181,7 +181,22 @@ fn run() {
     if let Some(note) = startup_note {
         set_status(&gui, note);
     }
+
+    check_for_updates_on_startup(&gui);
 }
+
+/// The quiet check: nothing at all unless there is a new version, and then ship-shape's own dialog offering it, which takes focus and is read like any other. Being up to date or offline is not news worth interrupting the feed for.
+#[cfg(windows)]
+fn check_for_updates_on_startup(gui: &Gui) {
+    let preferences = gui.state.borrow().app.preferences;
+    if preferences.check_for_updates_on_startup {
+        update::check(&gui.frame, preferences.dev_updates, true);
+    }
+}
+
+/// Elsewhere there is nothing to check with, and saying "updating is not available" at every start would be noise.
+#[cfg(not(windows))]
+fn check_for_updates_on_startup(_gui: &Gui) {}
 
 // ---- Wording / title -------------------------------------------------------
 
@@ -647,7 +662,8 @@ fn reload(gui: &Gui) {
 /// ship-shape's own dialogs take it from here — the release notes, the progress, and any error — and a screen reader reads them like any other dialog. See `update.rs`.
 #[cfg(windows)]
 fn check_for_updates(gui: &Gui) {
-    update::check(&gui.frame);
+    let dev = gui.state.borrow().app.preferences.dev_updates;
+    update::check(&gui.frame, dev, false);
 }
 
 #[cfg(not(windows))]
@@ -1074,7 +1090,7 @@ fn open_settings(gui: &Gui) {
     close_settings(gui);
 }
 
-/// One tab's worth of the settings dialog: a grouped tree of its fields next to a single editor pane (a `TextCtrl`, or for the one non-text field a `CheckBox`) that shows whichever field is currently selected in the tree.
+/// One tab's worth of the settings dialog: a grouped tree of its fields next to a single editor pane (a `TextCtrl`, or for an on/off preference a `CheckBox`) that shows whichever field is currently selected in the tree.
 fn build_settings_page(parent: &Notebook, tab_index: usize, gui: &Gui) -> Panel {
     let panel = Panel::builder(parent).build();
     let main_sizer = BoxSizer::builder(Orientation::Horizontal).build();
@@ -1087,9 +1103,8 @@ fn build_settings_page(parent: &Notebook, tab_index: usize, gui: &Gui) -> Panel 
     let editor_sizer = BoxSizer::builder(Orientation::Vertical).build();
     let description = StaticText::builder(&editor_panel).with_label("").build();
     let text_ctrl = TextCtrl::builder(&editor_panel).with_style(TextCtrlStyle::MultiLine).build();
-    let checkbox = CheckBox::builder(&editor_panel)
-        .with_label(Field::EscapeExits.label())
-        .build();
+    // One checkbox serves every toggle on the tab, relabelled as the selection moves, just as the one `TextCtrl` serves every template.
+    let checkbox = CheckBox::builder(&editor_panel).with_label("").build();
     checkbox.show(false);
     editor_sizer.add(&description, 0, SizerFlag::Expand | SizerFlag::All, 6);
     editor_sizer.add(&text_ctrl, 1, SizerFlag::Expand | SizerFlag::All, 6);
@@ -1133,22 +1148,23 @@ fn build_settings_page(parent: &Notebook, tab_index: usize, gui: &Gui) -> Panel 
 
             g.state.borrow_mut().app.settings.select_field(field_index);
 
-            let (field, help_text, is_toggle, announces) = {
+            let (field, help_text, toggle, announces) = {
                 let s = g.state.borrow();
                 let field = s.app.settings.fields()[field_index];
                 let count = s.app.settings.fields().len();
                 (
                     field,
                     s.app.field_help_text(field, field_index, count),
-                    s.app.settings.is_toggle(),
+                    s.app.settings.focused_toggle(),
                     s.speaker.announces_focus(),
                 )
             };
             description.set_label(&help_text);
 
-            if is_toggle {
-                let value = g.state.borrow().app.preferences.escape_exits;
+            if let Some(toggle) = toggle {
+                let value = g.state.borrow().app.preferences.get(toggle);
                 text_ctrl.show(false);
+                checkbox.set_label(field.label());
                 checkbox.set_value(value);
                 checkbox.show(true);
                 checkbox.set_focus();
@@ -1183,7 +1199,10 @@ fn build_settings_page(parent: &Notebook, tab_index: usize, gui: &Gui) -> Panel 
     {
         let g = gui.clone();
         checkbox.on_toggled(move |e: CheckBoxEventData| {
-            g.state.borrow_mut().app.preferences.escape_exits = e.is_checked();
+            let toggle = g.state.borrow().app.settings.focused_toggle();
+            if let Some(toggle) = toggle {
+                g.state.borrow_mut().app.preferences.set(toggle, e.is_checked());
+            }
         });
     }
 
@@ -1228,7 +1247,7 @@ fn speak_settings_keys(gui: &Gui) {
     say_on_demand(gui, text);
 }
 
-/// Put the selected field back to its compiled-in default, in the model and in the editor showing it. A no-op on the checkbox, which has no text.
+/// Put the selected field back to its compiled-in default, in the model and in the editor showing it. A no-op on a checkbox, which has no text.
 fn reset_focused_field(gui: &Gui, text_ctrl: &TextCtrl) {
     let reset = {
         let mut state = gui.state.borrow_mut();

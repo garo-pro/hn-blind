@@ -1,0 +1,59 @@
+name: Dev build
+
+# Every push to main rebuilds the rolling `latest` pre-release that the in-app updater's development channel reads (src/update.rs). A pre-release is never what GitHub's /releases/latest returns, so stable users are not offered it.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# A newer push supersedes an older one; there is no point finishing a build nobody will be offered.
+concurrency:
+  group: dev-build
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    uses: ./.github/workflows/build.yml
+    with:
+      channel: dev
+    secrets: inherit
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 50
+
+      - uses: actions/download-artifact@v8
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      # ship-shape's dev channel reads these notes as data, not prose: every line starting "- " is a commit, newest first, and its first word is the seven-character hash compared against the one build.rs stamps into the binary. The updater offers the lines above the running build's own as "what's new", and when that build is older than this list goes back, the whole list. The hash is cut to seven here rather than taken from %h, which git lengthens when seven would be ambiguous.
+      - name: Write release notes
+        shell: bash
+        run: |
+          {
+            echo "Development build of main at ${GITHUB_SHA::7}. Not a release: it has every change since the last one, tested or not."
+            echo
+            git log -n 50 --format='%H %s' | sed -E 's/^([0-9a-f]{7})[0-9a-f]* /- \1 /'
+          } > notes.md
+
+      # Deleted and recreated rather than edited, so the tag moves to this commit and no asset from an older build is left behind beside the new ones. A check that lands in the moment between finds no release and fails quietly, which is all a startup check does with any error.
+      - name: Replace the rolling release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete latest --cleanup-tag --yes || true
+          gh release create latest artifacts/* \
+            --prerelease \
+            --latest=false \
+            --title "Development build" \
+            --notes-file notes.md \
+            --target "$GITHUB_SHA"

@@ -15,9 +15,12 @@ use wxdragon::prelude::*;
 
 const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 
+/// The commit this binary was built from, as the seven-character short hash the development channel compares. Empty when `build.rs` could not find one. See `build.rs`.
+const CURRENT_COMMIT: &str = env!("HN_BLIND_COMMIT");
+
 const GITHUB_REPO: &str = "garo-pro/hn-blind";
 
-/// The public half of the key the release workflow signs the Windows zip with (the `MINISIGN_KEY` secret). A download that does not verify against it is deleted, never unpacked, so this line is what stands between a compromised release and every user's machine — change it only together with that secret.
+/// The public half of the key the release and dev workflows sign the Windows zip with (the `MINISIGN_KEY` secret). A download that does not verify against it is deleted, never unpacked, so this line is what stands between a compromised release and every user's machine — change it only together with that secret.
 const MINISIGN_PUBLIC_KEY: &str = "RWRMdwNGi4KYZEDEtn+bnjgM6ZDCemzo1TKkEdaEqhvzXFnFp+pjJXpE";
 
 /// The release workflow names each asset after its platform, and this is the part ship-shape inserts between `hn-blind` and `.zip` to find the one for this build. There is no aarch64 Windows release yet; asking for one anyway gets an honest "no matching download" rather than the x86_64 zip, which would not run.
@@ -27,7 +30,9 @@ const ASSET_SUFFIX: &str = "-windows-aarch64";
 const ASSET_SUFFIX: &str = "-windows-x86_64";
 
 /// Check for a newer release and, if there is one, let ship-shape offer it, download it and install it. Returns at once; the check runs on ship-shape's own thread, and a second call while one is under way does nothing.
-pub fn check(frame: &Frame) {
+///
+/// `dev` checks the rolling `latest` pre-release that the dev workflow rebuilds from every push to main, and compares commits rather than versions; otherwise only tagged releases count. `silent` is for the check at startup: ship-shape then shows nothing unless there is an update to offer, not even an error, so being offline never greets anyone with a dialog.
+pub fn check(frame: &Frame, dev: bool, silent: bool) {
     let config = UpdaterConfig::new(
         GITHUB_REPO,
         "hn-blind",
@@ -37,16 +42,18 @@ pub fn check(frame: &Frame) {
     )
     .with_asset_suffix(ASSET_SUFFIX);
 
+    let channel = if dev { UpdateChannel::Dev } else { UpdateChannel::Stable };
+
     keep_granting_foreground(frame.get_handle() as usize);
-    // Only the stable channel is offered, which compares version tags, so there is no commit hash to pass. Not an installer build: releases are a bare zip.
+    // Not an installer build: releases are a bare zip.
     ship_shape::ui::run_update_check(
         Arc::new(config),
         frame.handle_ptr() as usize,
         CURRENT_VERSION,
-        "",
+        CURRENT_COMMIT,
         false,
-        UpdateChannel::Stable,
-        false,
+        channel,
+        silent,
     );
 }
 
