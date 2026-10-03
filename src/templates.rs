@@ -257,7 +257,7 @@ templates! {
 
     // ---- Window title ----------------------------------------------------
     WindowTitle, "window_title", Group::Window, "Window title",
-        "hn-blind — {title}[ ({position} of {count})]",
+        "hn-blind — {title}",
         ["title", "position", "count"];
 
     // ---- Times -----------------------------------------------------------

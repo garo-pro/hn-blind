@@ -200,7 +200,7 @@ fn check_for_updates_on_startup(_gui: &Gui) {}
 
 // ---- Wording / title -------------------------------------------------------
 
-/// Mirror position into the window title, the one thing a sighted person looking over a shoulder can read.
+/// Mirror the current view into the window title, the one thing a sighted person looking over a shoulder can read. Position is offered to the template but left out of the default: the title is also what a screen reader reads on switching back to the window, and a cursor position there is noise the focused list already gives.
 fn sync_title(gui: &Gui) {
     let s = gui.state.borrow();
     let count = s.app.row_count();
