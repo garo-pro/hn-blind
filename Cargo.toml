@@ -14,4 +14,4 @@ wxdragon = "0.9.20"
 
 # In-place updating from GitHub releases. Windows only: the other platforms ship tarballs, which ship-shape cannot install. See `src/update.rs`.
 [target.'cfg(windows)'.dependencies]
-ship-shape = "0.2.0"
+ship-shape = "0.4.1"
