@@ -10,7 +10,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use ship_shape::{UpdateChannel, UpdaterConfig};
+use ship_shape::ui::CheckTrigger;
+use ship_shape::{InstallKind, UpdateChannel, UpdaterConfig};
 use wxdragon::prelude::*;
 
 const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -40,21 +41,16 @@ pub fn check(frame: &Frame, dev: bool, silent: bool) {
         MINISIGN_PUBLIC_KEY,
         format!("hn-blind/{CURRENT_VERSION}"),
     )
+    .with_commit(CURRENT_COMMIT)
+    // Not an installer build: releases are a bare zip.
+    .with_install_kind(InstallKind::Portable)
     .with_asset_suffix(ASSET_SUFFIX);
 
     let channel = if dev { UpdateChannel::Dev } else { UpdateChannel::Stable };
 
     keep_granting_foreground(frame.get_handle() as usize);
-    // Not an installer build: releases are a bare zip.
-    ship_shape::ui::run_update_check(
-        Arc::new(config),
-        frame.handle_ptr() as usize,
-        CURRENT_VERSION,
-        CURRENT_COMMIT,
-        false,
-        channel,
-        silent,
-    );
+    let trigger = if silent { CheckTrigger::Automatic } else { CheckTrigger::Manual };
+    ship_shape::ui::run_update_check(Arc::new(config), frame, channel, trigger);
 }
 
 #[link(name = "user32")]
