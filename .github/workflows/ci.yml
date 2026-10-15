@@ -46,9 +46,8 @@ jobs:
         os: [ubuntu-latest, windows-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     # The release workflow builds with PRISM_STATIC=1, a materially different
-    # link path: Prism's own PRIVATE dependencies are replayed at our link, the
-    # archive is pulled in whole so its built-in backend registrars survive,
-    # and on Windows build.rs has to forward the screen-reader delay-load list.
+    # link path: Prism's own PRIVATE dependencies are replayed at our link, and
+    # the archive is pulled in whole so its built-in backend registrars survive.
     # None of that is exercised by an ordinary build, so without this job a
     # break only surfaces once a tag is pushed -- which is how v0.1.1 failed on
     # all five targets.
@@ -99,12 +98,23 @@ jobs:
             Write-Output "::error::$exe still imports prism.dll"
             exit 1
           }
-          # The screen-reader DLLs must be present as delay-load entries; if
-          # build.rs stopped forwarding them the exe would not start at all.
+          # Prism loads the screen-reader DLLs itself at run time, so none of
+          # them may be a load-time import: those DLLs ship with the screen
+          # readers, and an exe that hard-imports one will not start on a
+          # machine without it. Their names do appear in the binary as strings
+          # for that run-time loader, so ask the import table rather than grep.
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $dumpbin = & $vswhere -latest -find "VC\Tools\MSVC\**\bin\Hostx64\x64\dumpbin.exe" | Select-Object -First 1
+          if (-not $dumpbin) {
+            Write-Output "::error::dumpbin.exe not found"
+            exit 1
+          }
+          $deps = & $dumpbin /dependents $exe | Out-String
+          Write-Output $deps
           foreach ($dll in "ZDSRAPI_x64.dll", "PCTKUSR.dll") {
-            if (-not $text.Contains($dll)) {
-              Write-Output "::error::$exe is missing the $dll delay-load entry"
+            if ($deps -match [regex]::Escape($dll)) {
+              Write-Output "::error::$exe imports $dll at load time"
               exit 1
             }
           }
-          Write-Output "statically linked, screen-reader DLLs delay-loaded"
+          Write-Output "statically linked, no screen-reader DLL imported at load time"
