@@ -10,7 +10,7 @@ Comments explain *why*, not *what*, and are allowed to be long where the reasoni
 
 ## Two output channels, never both at once
 
-The native wxDragon/wxWidgets controls own **focus** announcements: a list control for stories and help, a tree control for comments, plus a menu bar and settings dialog. A screen reader reads those on its own, because they are the same controls every other application uses.
+The native wxDragon/wxWidgets controls own **focus** announcements: a list control for stories and help, a tree control for comments, plus a menu bar and settings dialog. A screen reader reads those on its own, because they are the same controls every other application uses. The comment tree on Windows is the exception: the native control truncates item text at 260 characters, so `src/comment_tree.rs` puts an AccessKit tree on a bare panel there. It still owns focus announcements exactly as a native control would.
 
 Prism (`src/speech.rs`) owns everything a focused control cannot say: load progress, errors, feed changes, and the explicit "read this to me now" key (`P`).
 

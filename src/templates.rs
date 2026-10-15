@@ -117,9 +117,6 @@ templates! {
     CommentRow, "comment_row", Group::Comments, "Comment row",
         "{author}, {age}: {body}",
         ["index", "level", "author", "age", "body", "count"];
-    CommentDetail, "comment_detail", Group::Comments, "Comment, read in full",
-        "Level {level}. {author}, {age}.\\n{body}",
-        ["index", "level", "author", "age", "body", "count"];
     CommentsTitle, "comments_title", Group::Comments, "Comment list title",
         "{count} comments on {title}",
         ["count", "title", "author", "score"];

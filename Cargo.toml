@@ -4,6 +4,7 @@ version = "0.2.1"
 edition = "2024"
 
 [dependencies]
+accesskit = "0.25"
 open = "5.4.1"
 prism = { git = "https://github.com/garo-pro/prism2rust", version = "0.18.3" }
 serde = { version = "1.0.229", features = ["derive"] }
@@ -13,4 +14,5 @@ wxdragon = "0.9.20"
 
 # In-place updating from GitHub releases. Windows only: the other platforms ship tarballs, which ship-shape cannot install. See `src/update.rs`.
 [target.'cfg(windows)'.dependencies]
+accesskit_windows = "0.35"
 ship-shape = "0.4.1"

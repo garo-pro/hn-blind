@@ -1,6 +1,6 @@
 //! Application state and the wording it produces.
 //!
-//! There is no accessibility tree to build any more: `main.rs` owns real wxWidgets controls (a `ListCtrl`, a `TreeCtrl`, a native `MenuBar`, a settings `Dialog`) and the platform's own MSAA/UIA support is what a screen reader reads. This module's job shrinks to exactly what it should always have been about: deciding *what* the application is showing and *what to say* about it.
+//! There is no accessibility tree to build any more: `main.rs` owns real wxWidgets controls (a `ListCtrl`, a comment tree, a native `MenuBar`, a settings `Dialog`) and the platform's own MSAA/UIA support is what a screen reader reads. This module's job shrinks to exactly what it should always have been about: deciding *what* the application is showing and *what to say* about it.
 //!
 //! No wording is built by concatenation here either. Every string that reaches the user's ears comes from `templates.rs`, so this module's job is to decide *which* template applies and to hand it the values it needs.
 
@@ -36,7 +36,7 @@ pub const HELP: &[(&str, &str)] = &[
     ("Backspace or Escape", "go back to the story list"),
     ("R", "reload the current list"),
     ("1 to 6", "switch feed: top, new, best, ask, show, jobs"),
-    ("P", "read the selected item in full"),
+    ("P", "read the selected story in full"),
     ("S", "stop speaking"),
     ("V", "turn Prism speech on or off"),
     ("Alt", "open the menu bar, a second way to reach every command"),
@@ -476,9 +476,11 @@ impl App {
         )
     }
 
-    /// The full text of the selected row, spoken on demand. Unlike the label this is not truncated and keeps paragraph breaks.
-    pub fn selected_detail(&self) -> String {
-        match self.view {
+    /// The full text of the selected row, spoken on demand. Unlike the label this keeps paragraph breaks and can carry more than a row has room for.
+    ///
+    /// `None` in the comments, where there is nothing more to read: a comment's row is the whole comment, so a second way to hear it would only repeat the focused item.
+    pub fn selected_detail(&self) -> Option<String> {
+        Some(match self.view {
             View::Stories => match self.stories.get(self.story_cursor) {
                 Some(story) => {
                     let args = self.story_args(self.story_cursor, story);
@@ -486,13 +488,7 @@ impl App {
                 }
                 None => self.text(Template::StatusNothingSelected, &[]),
             },
-            View::Comments => match self.comments.get(self.comment_cursor) {
-                Some(row) => {
-                    let args = self.comment_args(self.comment_cursor, row);
-                    self.text(Template::CommentDetail, &borrow(&args))
-                }
-                None => self.text(Template::StatusNothingSelected, &[]),
-            },
+            View::Comments => return None,
             View::Help => {
                 let rows: Vec<String> = (0..HELP.len()).map(|i| self.row_label(i)).collect();
                 self.text(
@@ -507,7 +503,7 @@ impl App {
                 Some(field) => self.field_value_and_placeholders(field).0,
                 None => self.text(Template::StatusNothingSelected, &[]),
             },
-        }
+        })
     }
 
     // ---- Template arguments ----------------------------------------------

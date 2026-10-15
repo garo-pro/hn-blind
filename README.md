@@ -2,7 +2,7 @@
 
 An accessible Hacker News client in Rust, built for screen reader users.
 
-The interface is a real native window, built with [wxDragon](https://github.com/AllenDang/wxDragon) — Rust bindings to wxWidgets. A list control holds the story and help lists, a tree control the comment threads, and there is a menu bar and a dialog for settings. A screen reader already knows how to read all of those, because they are the same controls every other application on the platform uses; nothing here has to describe itself to the accessibility API by hand.
+The interface is a real native window, built with [wxDragon](https://github.com/AllenDang/wxDragon) — Rust bindings to wxWidgets. A list control holds the story and help lists, a tree the comment threads, and there is a menu bar and a dialog for settings. A screen reader already knows how to read nearly all of those, because they are the same controls every other application on the platform uses. The one exception is the comment tree on Windows, where the native control cuts an item's text off at 260 characters; there the tree describes itself to UI Automation through [AccessKit](https://github.com/AccessKit/accesskit) instead, so every comment is read whole.
 
 Alongside them, direct speech and braille output goes through [Prism](https://github.com/garo-pro/prism2rust), for everything a focused control cannot say on its own. Everything is keyboard driven.
 
@@ -44,7 +44,7 @@ cargo run --example preview -- templates
 | Backspace / Escape | Back to the story list |
 | R | Reload the current feed |
 | 1 – 6 | Top, New, Best, Ask, Show, Jobs |
-| P | Read the selected item in full |
+| P | Read the selected story in full |
 | S | Stop speaking |
 | V | Toggle Prism speech |
 | Alt | Open the menu bar, a second way to reach every command |
@@ -61,8 +61,8 @@ Whether Escape quits from the story list, rather than saying there is nowhere fu
 
 Using the platform's own accessibility support and Prism together risks announcing everything twice. They are kept strictly disjoint:
 
-- **The native controls** own *what is focused*. A feed is a single-column `wxListCtrl` whose rows are the story labels; a comment thread is a `wxTreeCtrl` whose nesting is the reply depth, so a screen reader announces the level natively and Left closes a subthread the listener is done with — after which every movement key steps over it, because a tree whose branches cannot be skipped is only an indented list; the settings dialog is a real modal dialog with a notebook, a tree and an edit field. wxWidgets publishes all of this to MSAA/UIA (and to AT-SPI on Linux, NSAccessibility on macOS) without being asked.
-- **Prism** owns *transient status* — load progress, errors, feed changes — and on-demand reading of the full text of an item (`P`), which is far too long to sit in a row label.
+- **The native controls** own *what is focused*. A feed is a single-column `wxListCtrl` whose rows are the story labels; a comment thread is a tree (a `wxTreeCtrl`, or on Windows an AccessKit tree, so that a long comment is not cut short) whose nesting is the reply depth, so a screen reader announces the level natively and Left closes a subthread the listener is done with — after which every movement key steps over it, because a tree whose branches cannot be skipped is only an indented list; the settings dialog is a real modal dialog with a notebook, a tree and an edit field. wxWidgets publishes all of this to MSAA/UIA (and to AT-SPI on Linux, NSAccessibility on macOS) without being asked.
+- **Prism** owns *transient status* — load progress, errors, feed changes — and on-demand reading of the full text of a story (`P`), which is far too long to sit in a row label. A comment needs no such key: its row is the whole comment.
 
 Two details make this adapt to the user's setup rather than assuming one:
 

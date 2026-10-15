@@ -65,9 +65,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("{}", app.row_label(index));
     }
 
-    // And the first comment as `P` would read it out: the one piece of wording that never appears in a row label.
-    println!("\n== read in full ==\n{}", app.selected_detail());
-
     Ok(())
 }
 

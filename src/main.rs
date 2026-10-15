@@ -1,6 +1,6 @@
 //! hn-blind — an accessible Hacker News client.
 //!
-//! The interface is a real native wxWidgets window: a `ListCtrl` for the story and help lists, a `TreeCtrl` for comment threads, a native `MenuBar`, and a `Dialog` for settings. wxWidgets' own MSAA/UIA support is what a screen reader reads; Prism supplies direct speech for status and on-demand full reading. See `app.rs` for how state becomes wording, `speech.rs` for how the two output channels stay out of each other's way, and `templates.rs` for where the wording itself comes from.
+//! The interface is a real native wxWidgets window: a `ListCtrl` for the story and help lists, a tree for comment threads (see `comment_tree.rs`), a native `MenuBar`, and a `Dialog` for settings. wxWidgets' own MSAA/UIA support is what a screen reader reads; Prism supplies direct speech for status and on-demand full reading. See `app.rs` for how state becomes wording, `speech.rs` for how the two output channels stay out of each other's way, and `templates.rs` for where the wording itself comes from.
 
 // No console window when launched normally (e.g. double-click); `cargo run` still shows one because it launches through a terminal already.
 #![windows_subsystem = "windows"]
@@ -30,8 +30,11 @@ use hn_blind::settings::{Field, TABS, fields_of, groups};
 use hn_blind::speech::Speaker;
 use hn_blind::templates::{Template, validate};
 
+mod comment_tree;
 #[cfg(windows)]
 mod update;
+
+use comment_tree::CommentTree;
 
 /// How many stories to pull per feed. HN's lists run to 500; a few screens' worth is what anyone actually reads.
 const STORY_LIMIT: usize = 50;
@@ -65,26 +68,24 @@ struct AppState {
     speaker: Speaker,
     generation: u64,
     requests: mpsc::Sender<Request>,
-    /// Parallel to `app.comments`: the tree node for each row, so a cursor index can be turned into something `TreeCtrl` understands.
-    comment_items: Vec<TreeItemId>,
 }
 
 /// The application's shared handle. Widgets are cheap `Copy` types, so they live here directly; only `AppState` needs a `RefCell`. Cloning a `Gui` is cheap and is how every closure gets its own handle to the whole app.
 #[derive(Clone)]
 struct Gui {
     state: Rc<RefCell<AppState>>,
-    /// Set for the duration of a *programmatic* selection change on `list` or `tree`, so the resulting native focus/selection event (which some platforms fire synchronously) knows to ignore an echo of a move this process already announced, rather than re-entering `state`'s `RefCell` while it may still be borrowed.
+    /// Set for the duration of a *programmatic* selection change on `list`, so the resulting native focus/selection event (which some platforms fire synchronously) knows to ignore an echo of a move this process already announced, rather than re-entering `state`'s `RefCell` while it may still be borrowed.
     suppress: Rc<Cell<bool>>,
     frame: Frame,
-    /// The frame's content area, holding `list` and `tree`. Kept so that hiding one and showing the other can be followed by a re-layout, which is what hands the whole area to whichever one is now visible.
+    /// The frame's content area, holding `list` and `comments`. Kept so that hiding one and showing the other can be followed by a re-layout, which is what hands the whole area to whichever one is now visible.
     panel: Panel,
     list: ListCtrl,
-    tree: TreeCtrl,
+    comments: CommentTree,
     /// Behind an `Rc` only because `MenuBar`, alone among the handles here, is not `Clone`: the frame owns the real menu bar and this is a borrowed view of it.
     menu_bar: Rc<MenuBar>,
 }
 
-/// `ListCtrl` is the one control here that wxdragon does not give the `WindowEvents` category to, so it cannot be passed to `bind_content_keys` beside `TreeCtrl`. Every method of that trait is a default over `WxEvtHandler`, so a local wrapper earns them all back — cheaper than a second copy of the key handling for the sake of one widget.
+/// `ListCtrl` is the one control here that wxdragon does not give the `WindowEvents` category to, so it cannot be passed to `bind_content_keys` beside the comment tree. Every method of that trait is a default over `WxEvtHandler`, so a local wrapper earns them all back — cheaper than a second copy of the key handling for the sake of one widget.
 struct KeyTarget(ListCtrl);
 
 impl WxEvtHandler for KeyTarget {
@@ -124,13 +125,11 @@ fn run() {
         .with_style(ListCtrlStyle::Report | ListCtrlStyle::SingleSel | ListCtrlStyle::NoHeader)
         .build();
     list.insert_column(0, "", ListColumnFormat::Left, 860);
-    let tree = TreeCtrl::builder(&panel)
-        .with_style(TreeCtrlStyle::HasButtons | TreeCtrlStyle::LinesAtRoot | TreeCtrlStyle::HideRoot)
-        .build();
-    tree.show(false);
+    let comments = CommentTree::new(&panel);
+    comments.show(false);
 
     sizer.add(&list, 1, SizerFlag::Expand | SizerFlag::All, 0);
-    sizer.add(&tree, 1, SizerFlag::Expand | SizerFlag::All, 0);
+    sizer.add(&comments.widget(), 1, SizerFlag::Expand | SizerFlag::All, 0);
     panel.set_sizer(sizer, true);
 
     let _status_bar = frame.create_status_bar(1, 0, -1, "");
@@ -144,7 +143,6 @@ fn run() {
         speaker,
         generation: 0,
         requests,
-        comment_items: Vec::new(),
     }));
 
     let menu_bar = build_menu_bar(&state.borrow().app);
@@ -157,13 +155,13 @@ fn run() {
         frame,
         panel,
         list,
-        tree,
+        comments,
         menu_bar,
     };
 
     bind_menu_events(&gui);
     bind_content_keys(&KeyTarget(gui.list), &gui);
-    bind_content_keys(&gui.tree, &gui);
+    bind_content_keys(&gui.comments.widget(), &gui);
     bind_content_selection(&gui);
     bind_context_menu(&gui);
     bind_worker_idle(&gui, worker_rx);
@@ -261,13 +259,13 @@ fn enter_view(gui: &Gui, status: impl Into<String>) {
 
 /// Handle a cursor move: push the new position into the native control, then (with no screen reader doing it for us) speak the row that landed under it.
 fn moved(gui: &Gui) {
-    // `suppress` is what makes it safe to hold this borrow across a call into wxWidgets: the selection events it fires synchronously turn around at the top of their handlers without touching `state`. Holding it rather than copying is what keeps a four-hundred-comment thread from cloning every one of its tree item handles on each keypress.
+    // `suppress` is what makes it safe to hold this borrow across a call into wxWidgets: the selection events it fires synchronously turn around at the top of their handlers without touching `state`. The comment tree keeps the same guard over its own events.
     gui.suppress.set(true);
     {
         let s = gui.state.borrow();
         match s.app.view {
             View::Stories | View::Help => select_list_row(&gui.list, s.app.cursor(), s.app.row_count()),
-            View::Comments => select_tree_row(&gui.tree, &s.comment_items, s.app.cursor()),
+            View::Comments => gui.comments.select(s.app.cursor()),
             View::Settings => {}
         }
     }
@@ -299,12 +297,11 @@ fn populate_view(gui: &Gui) {
 
     match view {
         View::Stories | View::Help => {
-            gui.tree.show(false);
+            gui.comments.show(false);
             gui.list.show(true);
             gui.list.delete_all_items();
-            // Hiding the tree does not empty it, so without this a thread the user has left stays in memory -- every native node with its label, plus our handles into them -- for as long as they browse elsewhere. Entering the comments view rebuilds the tree from `app.comments` regardless, so emptying it here only moves a delete that was going to happen anyway.
-            gui.tree.delete_all_items();
-            gui.state.borrow_mut().comment_items.clear();
+            // Hiding the tree does not empty it, so without this a thread the user has left stays in memory for as long as they browse elsewhere. Entering the comments view rebuilds the tree from `app.comments` regardless, so emptying it here only moves a delete that was going to happen anyway.
+            gui.comments.clear();
             let count = gui.state.borrow().app.row_count();
             for i in 0..count {
                 let label = gui.state.borrow().app.row_label(i);
@@ -315,47 +312,28 @@ fn populate_view(gui: &Gui) {
         }
         View::Comments => {
             gui.list.show(false);
-            gui.tree.show(true);
-            gui.tree.delete_all_items();
-
-            let mut items: Vec<TreeItemId> = Vec::new();
-            {
+            gui.comments.show(true);
+            let (rows, cursor) = {
                 let s = gui.state.borrow();
-                if !s.app.comments.is_empty()
-                    && let Some(root) = gui.tree.add_root("Comments", None, None)
-                {
-                    // The thread arrives flattened into reading order with a depth on each row; `stack` turns that back into nesting, which is what makes the tree announce reply level.
-                    let mut stack: Vec<(i64, TreeItemId)> = Vec::new();
-                    for (i, row) in s.app.comments.iter().enumerate() {
-                        let depth = row.depth as i64;
-                        while stack.last().is_some_and(|(d, _)| *d >= depth) {
-                            stack.pop();
-                        }
-                        let parent = stack.last().map(|(_, id)| id).unwrap_or(&root);
-                        let label = s.app.row_label(i);
-                        if let Some(item) = gui.tree.append_item_with_data(parent, &label, i, None, None) {
-                            items.push(item.clone());
-                            stack.push((depth, item));
-                        }
-                    }
-                    // Expand first so every reply has been laid out, then close the threads the user had closed: `collapse` on an item that was never expanded is a no-op, so the order matters when a view is rebuilt.
-                    gui.tree.expand_all();
-                    for (i, item) in items.iter().enumerate() {
-                        if s.app.comment_is_collapsed(i) {
-                            gui.tree.collapse(item);
-                        }
-                    }
-                }
-            }
-
-            gui.state.borrow_mut().comment_items = items;
-            let s = gui.state.borrow();
-            let cursor = s.app.cursor();
-            select_tree_row(&gui.tree, &s.comment_items, cursor);
+                let rows = s
+                    .app
+                    .comments
+                    .iter()
+                    .enumerate()
+                    .map(|(i, row)| comment_tree::Row {
+                        label: s.app.row_label(i),
+                        depth: row.depth,
+                        has_replies: s.app.comment_has_replies(i),
+                        collapsed: s.app.comment_is_collapsed(i),
+                    })
+                    .collect();
+                (rows, s.app.cursor())
+            };
+            gui.comments.set_rows(rows, cursor);
         }
         View::Settings => {
             gui.list.show(false);
-            gui.tree.show(false);
+            gui.comments.show(false);
         }
     }
 
@@ -373,17 +351,6 @@ fn select_list_row(list: &ListCtrl, index: usize, count: usize) {
     if count > 0 {
         list.ensure_visible(index as i64);
         list.set_focus();
-    }
-}
-
-/// Point the tree at one row. `index` is an index into the whole thread, so it is only ever a row that is actually showing — `ensure_visible` would otherwise reopen the very thread the user had just collapsed.
-///
-/// No `unselect_all` first: this is a single-selection tree, so selecting is already a replacement, and the moment with nothing selected that clearing leaves behind is a moment a screen reader has to say something about.
-fn select_tree_row(tree: &TreeCtrl, items: &[TreeItemId], index: usize) {
-    if let Some(item) = items.get(index) {
-        tree.select_item(item);
-        tree.ensure_visible(item);
-        tree.set_focus();
     }
 }
 
@@ -545,7 +512,9 @@ fn open_url(gui: &Gui, url: Option<String>, what: Template) {
 
 fn read_selection(gui: &Gui) {
     let detail = gui.state.borrow().app.selected_detail();
-    say_on_demand(gui, detail);
+    if let Some(detail) = detail {
+        say_on_demand(gui, detail);
+    }
 }
 
 /// Say something the user has explicitly asked to hear.
@@ -612,21 +581,9 @@ fn set_collapsed(gui: &Gui, index: usize, collapsed: bool) {
         return;
     }
 
-    // The tree is the one doing the hiding; the state above only records it so that movement and the rebuilt view agree with what is on screen.
-    gui.suppress.set(true);
-    {
-        let s = gui.state.borrow();
-        if let Some(item) = s.comment_items.get(index) {
-            if collapsed {
-                gui.tree.collapse(item);
-            } else {
-                gui.tree.expand(item);
-            }
-        }
-        // Closing a thread can have moved the cursor out of it.
-        select_tree_row(&gui.tree, &s.comment_items, s.app.cursor());
-    }
-    gui.suppress.set(false);
+    // The tree is the one doing the hiding; the state above only records it so that movement and the rebuilt view agree with what is on screen. Closing a thread can have moved the cursor out of it.
+    let cursor = gui.state.borrow().app.cursor();
+    gui.comments.set_collapsed(index, collapsed, cursor);
 
     sync_title(gui);
 
@@ -828,46 +785,15 @@ fn bind_content_selection(gui: &Gui) {
     gui.list.on_item_activated(move |_| activate(&g));
 
     let g = gui.clone();
-    gui.tree.on_selection_changed(move |e: TreeEventData| {
-        if g.suppress.get() {
-            return;
-        }
-        let Some(index) = e.get_item().and_then(|item| tree_row(&g, &item)) else {
-            return;
-        };
-        move_to(&g, index);
-    });
+    gui.comments.on_select(move |index| move_to(&g, index));
     let g = gui.clone();
-    gui.tree.on_item_activated(move |_| activate(&g));
-
-    // Clicking the expander is the other way to open and close a thread, and the cursor has to step over the same rows afterwards however it was done. `suppress` is what keeps this from echoing back the collapses this application asked the tree for itself.
+    gui.comments.on_activate(move || activate(&g));
+    // Opening or closing a thread from outside the key handlers — the expander, or a screen reader's own command — goes through the same path as Left and Right, so the cursor steps over the same rows afterwards however it was done.
     let g = gui.clone();
-    gui.tree.on_item_collapsed(move |e: TreeEventData| collapsed_in_tree(&g, e, true));
-    let g = gui.clone();
-    gui.tree.on_item_expanded(move |e: TreeEventData| collapsed_in_tree(&g, e, false));
+    gui.comments.on_toggle(move |index, collapsed| set_collapsed(&g, index, collapsed));
 }
 
-/// Record a thread the tree itself opened or closed, so movement agrees with what is on screen.
-fn collapsed_in_tree(gui: &Gui, e: TreeEventData, collapsed: bool) {
-    if gui.suppress.get() {
-        return;
-    }
-    let Some(index) = e.get_item().and_then(|item| tree_row(gui, &item)) else {
-        return;
-    };
-    if gui.state.borrow_mut().app.set_comment_collapsed(index, collapsed) {
-        sync_title(gui);
-    }
-}
-
-/// The thread row a tree item stands for. Every item carries its index into `app.comments` as its data, which is the only thing that survives the tree being rebuilt.
-fn tree_row(gui: &Gui, item: &TreeItemId) -> Option<usize> {
-    gui.tree
-        .get_custom_data(item)
-        .and_then(|data| data.downcast_ref::<usize>().copied())
-}
-
-/// The row-relevant context menu: right-click, or the keyboard's Menu key / Shift+F10, either of which wxWidgets reports as `wxEVT_CONTEXT_MENU` on whichever of `list` or `tree` is focused. That event bubbles up to `panel` (their common wx parent) when neither handles it, so one binding here covers both controls without needing a copy per widget.
+/// The row-relevant context menu: right-click, or the keyboard's Menu key / Shift+F10, either of which wxWidgets reports as `wxEVT_CONTEXT_MENU` on whichever of `list` or the comment tree is focused. That event bubbles up to `panel` (their common wx parent) when neither handles it, so one binding here covers both controls without needing a copy per widget.
 fn bind_context_menu(gui: &Gui) {
     let g = gui.clone();
     gui.panel.on_context_menu(move |e: MenuEventData| {
