@@ -693,10 +693,26 @@ fn handle_named_key(gui: &Gui, code: i32) -> bool {
         return expand_current(gui);
     } else if code == WXK_F1 {
         toggle_help(gui);
+    } else if code == WXK_ESCAPE {
+        // Escape is taken here on key-down rather than as the character Windows makes of it, because acting on the character stopped taking the user back once the comment thread became the AccessKit panel. Its key-down takes the same route Up and Down already do on that panel, and it is the one form wxWidgets deliberately keeps away from the dialog manager (`MSWSafeIsDialogMessage`). Consuming it suppresses the character, so the list does not see Escape twice either.
+        escape(gui);
     } else {
         return false;
     }
     true
+}
+
+/// At the story list Escape either quits or is just Backspace's synonym for "go back", depending on the preference; elsewhere it always means "go back".
+fn escape(gui: &Gui) {
+    let (view, escape_exits) = {
+        let s = gui.state.borrow();
+        (s.app.view, s.app.preferences.escape_exits)
+    };
+    if view == View::Stories && escape_exits {
+        gui.frame.close(true);
+    } else {
+        go_back(gui);
+    }
 }
 
 /// Printable characters, shared by the story/help list and the comment tree. Returns whether the character was consumed.
@@ -712,18 +728,6 @@ fn handle_char(gui: &Gui, ch: char) -> bool {
     match ch {
         '\u{8}' => go_back(gui), // Backspace
         '\r' | '\n' => activate(gui),
-        '\u{1b}' => {
-            // Escape: at the story list either quits or is just Backspace's synonym for "go back", depending on the preference; elsewhere it always means "go back".
-            let (view, escape_exits) = {
-                let s = gui.state.borrow();
-                (s.app.view, s.app.preferences.escape_exits)
-            };
-            if view == View::Stories && escape_exits {
-                gui.frame.close(true);
-            } else {
-                go_back(gui);
-            }
-        }
         'j' | 'J' => move_by(gui, 1),
         'k' | 'K' => move_by(gui, -1),
         'o' | 'O' => {
