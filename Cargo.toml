@@ -15,4 +15,4 @@ wxdragon = "0.9.20"
 # In-place updating from GitHub releases. Windows only: the other platforms ship tarballs, which ship-shape cannot install. See `src/update.rs`.
 [target.'cfg(windows)'.dependencies]
 accesskit_windows = "0.35"
-ship-shape = "0.4.1"
+ship-shape = "0.5.0"
