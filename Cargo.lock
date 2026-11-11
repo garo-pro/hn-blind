@@ -695,9 +695,9 @@ dependencies = [
 
 [[package]]
 name = "inventory"
-version = "0.3.24"
+version = "0.3.25"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a4f0c30c76f2f4ccee3fe55a2435f691ca00c0e4bd87abe4f4a851b1d4dac39b"
+checksum = "6928282826c822ad91bf1c9a1cb90a30ba1c26770749929b4656cd6be829cd7c"
 dependencies = [
  "rustversion",
 ]
@@ -807,9 +807,9 @@ checksum = "68354c5c6bd36d73ff3feceb05efa59b6acb7626617f4962be322a825e61f79a"
 
 [[package]]
 name = "minisign-verify"
-version = "0.2.5"
+version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "22f9645cb765ea72b8111f36c522475d2daa0d22c957a9826437e97534bc4e9e"
+checksum = "871285dc19d8d0ebe0eef3d0e99a205f2a71363b122632cbbfa4a6c370a960ce"
 
 [[package]]
 name = "miniz_oxide"
@@ -938,9 +938,9 @@ checksum = "57c0d7b74b563b49d38dae00a0c37d4d6de9b432382b2892f0574ddcae73fd0a"
 
 [[package]]
 name = "patois"
-version = "0.2.3"
+version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "75b8d37756e8066067907b01d2cb1ffb7f2886707af4909280a523b2f98f59cc"
+checksum = "65bc7431eaf0d46219e3142a741439181c9fb97c85e15e52ff99d66728b50c05"
 dependencies = [
  "inventory",
  "patois-macros",
@@ -949,13 +949,12 @@ dependencies = [
 
 [[package]]
 name = "patois-macros"
-version = "0.2.0"
+version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3d1d2d62df9932eb304bdff8cf9c33e886b95f00a58b5c682ab5b8ef3724b425"
+checksum = "a0908224da8a29773f5d9f668a7fd1f8c8476f208ad845db0aac002e8ba3412e"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 3.0.3",
 ]
 
 [[package]]
@@ -1030,9 +1029,9 @@ dependencies = [
 
 [[package]]
 name = "pulldown-cmark"
-version = "0.13.4"
+version = "0.13.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e9f068eba8e7071c5f9511831b44f32c740d5adf574e990f946ddb53db2f314e"
+checksum = "3db2be46835f013dd3f4fa7f5f7402c537787b54ebb6fe2b94bbdd7e2669bb7b"
 dependencies = [
  "bitflags",
  "memchr",
@@ -1305,9 +1304,9 @@ dependencies = [
 
 [[package]]
 name = "ship-shape"
-version = "0.5.0"
+version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6ce8fbe060ee50d27fa6ecbe67a266e79a547257c5452ac87dbb6382d5d98e51"
+checksum = "7845b55386c79fc751844054ef6125129aed3c70394f2642ba28275918c8a93f"
 dependencies = [
  "homeport",
  "minisign-verify",
@@ -1617,9 +1616,9 @@ checksum = "8ecb6da28b8a351d773b68d5825ac39017e680750f980f3a1a85cd8dd28a47c1"
 
 [[package]]
 name = "ureq"
-version = "3.5.0"
+version = "3.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cde93ff05758a36a851a398a772b0b79a82fbe3c186a46f2696baaeaf84c966b"
+checksum = "e7be76686bdf7198002062423ca0d8cf9b75a27c8e1de804513b97e97b555d9d"
 dependencies = [
  "base64 0.23.1",
  "cookie_store",
@@ -1637,9 +1636,9 @@ dependencies = [
 
 [[package]]
 name = "ureq-proto"
-version = "0.6.5"
+version = "0.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "841583fc36089d7d59419568ae157f43a5a03a2e5a81ba87c77d1596ef46e922"
+checksum = "622dce33c252115466d83f63e9744a18f12b4406aae51a01c15ad8fcf1185eb3"
 dependencies = [
  "base64 0.23.1",
  "http",
@@ -1978,9 +1977,9 @@ checksum = "1ffae5123b2d3fc086436f8834ae3ab053a283cfac8fe0a0b8eaae044768a4c4"
 
 [[package]]
 name = "wx-utils"
-version = "0.4.3"
+version = "0.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e92a58893c3e57e6156221c2eafc9ef3dcc6e6576813e7fc74b6b00e909741a9"
+checksum = "a7d51e4c928c45bd2ad36f334cd0677d5b06a95ff0099a1f4d4358f2a11859c5"
 dependencies = [
  "patois",
  "wxdragon",
